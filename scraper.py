@@ -380,4 +380,3 @@ def capture_requests_while_click(page, element_handle_or_selector, timeout=6):
             info = {
                 "url": request.url,
                
-
