@@ -1,18 +1,20 @@
-
+# name=scraper.py
 """
-PostEx Loadsheet Scraper
-========================
-Logs into merchant.postex.pk, extracts loadsheet IDs from the rendered page HTML,
-calls PostEx API endpoints directly (using JWT + cookies captured from browser),
-and saves the combined data into JSON.
+PostEx Loadsheet Scraper - Full verbose debug edition
 
-This version:
-- Uses robust date matching (works across platforms)
-- Parses the table HTML content for rows and the numeric ID embedded in the
-  dropdown class "more-menu-<id>"
-- Calls the API directly for each loadsheet and status (booked/delivered/etc.)
-- Saves results to data/loadsheet_YYYY-MM-DD.json
-- Verbose logging to help debug remaining issues
+What this file does:
+- Logs into merchant.postex.pk using Playwright
+- Captures JWT + cookies
+- Attempts several strategies to find loadsheet rows and numeric load-sheet IDs:
+    1) DOM selector on the main page
+    2) Regex parse of page.content()
+    3) Inspect all frames' content
+- For each candidate row it will:
+    - Try to click the "orders" span and capture any requests/responses triggered
+    - Log every request/response URL (so you can see the exact API URL called by the browser)
+- If a numeric sheet_id is found, the script calls the API directly with requests.Session
+  (session includes Authorization header + copied cookies)
+- Saves final JSON to data/loadsheet_YYYY-MM-DD.json with a debug section
 """
 
 import os
@@ -20,21 +22,20 @@ import re
 import json
 import time
 import logging
-import requests
-
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+import requests
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 # ---------------------------
-# Logging (verbose)
+# Logging - VERY VERBOSE
 # ---------------------------
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(funcName)s:%(lineno)d | %(message)s",
 )
-log = logging.getLogger(__name__)
+log = logging.getLogger("postex-scraper")
 
 # ---------------------------
 # Config
@@ -46,54 +47,36 @@ API_BASE = "https://api.postex.pk/services/merchant/api/load-sheet"
 
 USERNAME = os.environ.get("POSTEX_USERNAME", "")
 PASSWORD = os.environ.get("POSTEX_PASSWORD", "")
-
-if not USERNAME or not PASSWORD:
-    log.error("POSTEX_USERNAME or POSTEX_PASSWORD environment variable missing")
-
 N8N_WEBHOOK = os.environ.get("N8N_WEBHOOK_URL", "")
 
 OUTPUT_DIR = Path("data")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-log.debug(f"BASE_URL: {BASE_URL}")
-log.debug(f"LOGIN_URL: {LOGIN_URL}")
-log.debug(f"LOADSHEET_URL: {LOADSHEET_URL}")
-log.debug(f"API_BASE: {API_BASE}")
-log.debug(f"OUTPUT_DIR: {OUTPUT_DIR}")
-
-# ---------------------------
-# Date handling (target = yesterday by default)
-# ---------------------------
+# Target date default: yesterday
 DATE_OVERRIDE = os.environ.get("DATE_OVERRIDE")
-
 if DATE_OVERRIDE:
     TARGET_DATE = datetime.strptime(DATE_OVERRIDE, "%Y-%m-%d")
-    log.info(f"Using DATE_OVERRIDE: {DATE_OVERRIDE}")
 else:
     TARGET_DATE = datetime.now() - timedelta(days=1)
-    log.info("Using yesterday's date as target")
 
 DATE_TAG = TARGET_DATE.strftime("%Y-%m-%d")
-TARGET_MONTH = TARGET_DATE.strftime("%b")  # May
-TARGET_DAY = TARGET_DATE.day               # 9
-TARGET_YEAR = TARGET_DATE.year             # 2026
+TARGET_MONTH = TARGET_DATE.strftime("%b")
+TARGET_DAY = TARGET_DATE.day
+TARGET_YEAR = TARGET_DATE.year
+TARGET_LABEL = f"{TARGET_MONTH} {TARGET_DAY}, {TARGET_YEAR}"
 
-log.info(f"Target date components: {TARGET_MONTH} {TARGET_DAY}, {TARGET_YEAR}")
+OUTPUT_FILE = OUTPUT_DIR / f"loadsheet_{DATE_TAG}.json"
 
 # ---------------------------
-# Utility: robust date matcher
+# Helpers
 # ---------------------------
 def matches_target_date(date_text: str) -> bool:
-    """
-    Parse date_text for 'Month Day, Year' and compare to TARGET_DATE components.
-    Handles strings like: 'May 9, 2026, 9:16:58 PM' or 'May 09, 2026'
-    """
     if not date_text:
         return False
-    txt = date_text.strip()
-    m = re.search(r"(\w+)\s+(\d{1,2}),\s+(\d{4})", txt)
+    date_text = date_text.strip()
+    m = re.search(r"(\w+)\s+(\d{1,2}),\s+(\d{4})", date_text)
     if not m:
-        log.debug(f"Could not parse date from '{date_text}'")
+        log.debug(f"matches_target_date: cannot parse date_text='{date_text}'")
         return False
     month, day_s, year_s = m.group(1), m.group(2), m.group(3)
     try:
@@ -101,39 +84,45 @@ def matches_target_date(date_text: str) -> bool:
         year = int(year_s)
     except ValueError:
         return False
-    match = (month == TARGET_MONTH and day == TARGET_DAY and year == TARGET_YEAR)
-    log.debug(f"Parsed date: {month} {day}, {year} -> matches={match}")
-    return match
+    ok = (month == TARGET_MONTH and day == TARGET_DAY and year == TARGET_YEAR)
+    log.debug(f"matches_target_date: parsed {month} {day}, {year} -> ok={ok}")
+    return ok
+
+def write_result(result):
+    OUTPUT_FILE.write_text(json.dumps(result, indent=2, ensure_ascii=False))
+    log.info(f"Wrote output to {OUTPUT_FILE}")
 
 # ---------------------------
-# Login
+# Login & auth capture
 # ---------------------------
 def login(page):
-    log.info(">>> STEP 1: LOGIN")
+    log.info("Login: navigating to login page")
     page.goto(LOGIN_URL, wait_until="networkidle")
-    log.debug(f"Login page title: {page.title()}")
-    # Try typical email selectors (site uses input[type=email])
+    log.debug(f"Page title after open: {page.title()}")
+    # fill email
     try:
         page.fill('input[type="email"]', USERNAME)
+        log.debug("Filled input[type=email]")
     except Exception:
-        # fallback: attempt other selectors silently
-        for sel in ('input[name="email"]', 'input[placeholder*="mail" i]', 'input[placeholder*="Email" i]'):
+        # try alternatives
+        for sel in ('input[name="email"]', 'input[placeholder*="mail" i]'):
             try:
                 if page.locator(sel).count() > 0:
                     page.fill(sel, USERNAME)
+                    log.debug(f"Filled {sel}")
                     break
             except Exception:
                 continue
+    # fill password
     page.fill('input[type="password"]', PASSWORD)
+    log.debug("Filled password")
     page.click('button[type="submit"]')
+    log.debug("Submitted login form, waiting for redirect to /main/**")
     page.wait_for_url(f"{BASE_URL}/main/**", timeout=30_000)
-    log.info(f"✓ Logged in - current url: {page.url}")
+    log.info(f"Login complete - current URL: {page.url}")
 
-# ---------------------------
-# Capture session (JWT + cookies) -> requests.Session
-# ---------------------------
-def get_auth_session(page) -> requests.Session:
-    log.info(">>> STEP 2: CAPTURE AUTH (JWT + COOKIES)")
+def get_auth_session(page):
+    log.info("Capturing JWT from localStorage/sessionStorage and copying cookies")
     token = page.evaluate("""() => {
         return localStorage.getItem('token')
             || localStorage.getItem('authToken')
@@ -143,308 +132,252 @@ def get_auth_session(page) -> requests.Session:
             || '';
     }""")
     if not token:
-        # try scanning localStorage keys for something that looks like JWT
+        # try to find any entry starting with 'eyJ'
         token = page.evaluate("""() => {
-            for (let i = 0; i < localStorage.length; i++) {
-                const k = localStorage.key(i);
-                const v = localStorage.getItem(k);
-                if (v && v.startsWith('eyJ')) return v;
+            for (let i=0;i<localStorage.length;i++){
+               const k = localStorage.key(i);
+               const v = localStorage.getItem(k);
+               if (v && v.startsWith('eyJ')) return v;
             }
             return '';
         }""")
     if not token:
-        log.error("JWT token not found in localStorage/sessionStorage after login")
-        raise Exception("JWT token not found")
-
-    # strip Bearer if present
-    token = token.replace("Bearer ", "").strip()
-    log.debug(f"Token (first 40 chars): {token[:40]}...")
+        log.error("No JWT token found in browser storage")
+        # We continue (some APIs might still allow cookies) but warn strongly
+    else:
+        log.debug(f"Token found (first 60 chars): {token[:60]}...")
 
     session = requests.Session()
-    session.headers.update({
-        "Accept": "application/json, text/plain, */*",
-        "Authorization": f"Bearer {token}",
-        "Origin": "https://merchant.postex.pk",
-        "Referer": "https://merchant.postex.pk/",
-        "User-Agent": (
-            "Mozilla/5.0 (Playwright) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
-        )
-    })
+    if token:
+        session.headers.update({
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://merchant.postex.pk",
+            "Referer": "https://merchant.postex.pk/",
+            "User-Agent": "Mozilla/5.0 (Playwright) AppleWebKit/537.36 (KHTML, like Gecko)"
+        })
 
-    # copy cookies
     cookies = page.context.cookies()
-    log.debug(f"Found {len(cookies)} browser cookies")
+    log.debug(f"Browser cookies count: {len(cookies)}")
     for c in cookies:
         session.cookies.set(c["name"], c["value"])
-        log.debug(f"  cookie set: {c['name']}")
+        log.debug(f"Copied cookie: {c['name']}={c['value'][:20]}...")
 
-    log.info("✓ Auth session created (requests.Session)")
     return session
 
 # ---------------------------
-# Extract loadsheet rows & numeric IDs from page HTML
+# Debugging: page / frames state
 # ---------------------------
-def extract_sheet_ids_from_html(page) -> list:
-    """
-    Parse page.content() to find loadsheet rows and numeric sheet IDs embedded in
-    the dropdown class 'more-menu-<id>'.
+def dump_page_state(page):
+    log.info("=== DUMP PAGE STATE ===")
+    try:
+        url = page.url
+        title = page.title()
+    except Exception as e:
+        url = "<error reading page.url>"
+        title = "<error reading title>"
+        log.exception(e)
+    log.info(f"page.url = {url}")
+    log.info(f"page.title = {title}")
+    content = page.content()
+    log.info(f"page.content length = {len(content)}")
+    # save a copy for offline inspection
+    debug_path = OUTPUT_DIR / f"debug_page_{int(time.time())}.html"
+    try:
+        debug_path.write_text(content, encoding="utf-8")
+        log.info(f"Wrote debug page HTML to {debug_path}")
+    except Exception as e:
+        log.warning(f"Failed to write debug HTML: {e}")
 
-    Returns list of dicts:
-      {
-        "loadsheet_number": "LDS-ES7BY484060",
-        "loadsheet_id": "5381184",
-        "total_orders": "28",
-        "date": "May 9, 2026, 9:16:58 PM",
-        "status": "COMPLETED"
-      }
+    # frames
+    frames = page.frames
+    log.info(f"Frames count: {len(frames)}")
+    for i, f in enumerate(frames):
+        try:
+            furl = f.url
+        except Exception:
+            furl = "<unknown>"
+        try:
+            fcontent = f.content()
+            fclen = len(fcontent)
+        except Exception:
+            fcontent = ""
+            fclen = -1
+        log.debug(f"Frame[{i}] url={furl} content_len={fclen}")
+
+# ---------------------------
+# Strategies to find loadsheet row + ID
+# ---------------------------
+def find_rows_dom(page):
     """
-    html = page.content()
+    Method A: use DOM selectors to find table rows and extract data.
+    Returns list of dicts with loadsheet_number, approximate date_text, and dom element handles (or None).
+    """
+
     results = []
+    log.info("Method A: Trying DOM selectors on main frame")
 
-    # find tr blocks (non-greedy)
-    tr_blocks = re.findall(r"(<tr[^>]*>.*?</tr>)", html, flags=re.DOTALL | re.IGNORECASE)
-    log.debug(f"HTML contains {len(tr_blocks)} <tr> blocks")
+    try:
+        # try to find table rows (table id may be 'excel-table')
+        # We attempt multiple selectors
+        selectors = [
+            "table#excel-table tbody tr.data-item",
+            "table.data-table tbody tr.data-item",
+            "tbody tr.data-item",
+            "tr.data-item",
+        ]
+        rows = []
+        used_sel = None
+        for sel in selectors:
+            try:
+                found = page.query_selector_all(sel)
+                log.debug(f"Selector '{sel}' found {len(found)} elements")
+                if found and len(found) > 0:
+                    rows = found
+                    used_sel = sel
+                    break
+            except Exception as e:
+                log.debug(f"Selector '{sel}' raised: {e}")
+                continue
 
-    for block in tr_blocks:
-        # look for loadsheet number: inside a span with 'lead' or text 'LDS-...'
+        if not rows:
+            log.info("DOM method: no rows found with selectors")
+            return results
+
+        log.info(f"DOM method: using selector '{used_sel}' and found {len(rows)} rows")
+
+        for idx, row in enumerate(rows):
+            try:
+                # try to read TD cells
+                cells = row.query_selector_all("td")
+                log.debug(f"Row {idx} -> {len(cells)} <td> cells found")
+                # try to read cell texts defensively
+                def text_of(el):
+                    try:
+                        return el.inner_text().strip()
+                    except Exception:
+                        return ""
+                lds = text_of(cells[0]) if len(cells) > 0 else ""
+                total = text_of(cells[1]) if len(cells) > 1 else ""
+                date_text = text_of(cells[5]) if len(cells) > 5 else ""
+                status = text_of(cells[6]) if len(cells) > 6 else ""
+                # also attempt to find dropdown more-menu class inside this row
+                ul = row.query_selector("ul[class*='more-menu-']")
+                more_menu_class = ul.get_attribute("class") if ul else None
+                m = None
+                if more_menu_class:
+                    m = re.search(r"more-menu-(\d+)", more_menu_class)
+                # fallback: search block outerHTML for more-menu numbers
+                if not m:
+                    outer = row.inner_html()
+                    m = re.search(r"more-menu-(\d+)", outer)
+                sheet_id = m.group(1) if m else None
+
+                entry = {
+                    "source": "dom",
+                    "row_index": idx,
+                    "loadsheet_number": lds,
+                    "total_orders": total,
+                    "date_text": date_text,
+                    "status": status,
+                    "sheet_id": sheet_id,
+                    "row_element": row,  # actual ElementHandle - caller must not serialize
+                }
+                log.debug(f"DOM candidate: {entry['loadsheet_number']} id={sheet_id} date='{date_text}'")
+                results.append(entry)
+            except Exception as e:
+                log.exception(f"Error reading DOM row {idx}: {e}")
+                continue
+
+    except Exception as e:
+        log.exception(f"DOM method encountered error: {e}")
+
+    return results
+
+def find_rows_html_parse(content):
+    """
+    Method B: parse page HTML string for <tr> blocks and more-menu-<id>
+    """
+    results = []
+    log.info("Method B: parsing page HTML for <tr> blocks and more-menu-<id>")
+
+    tr_blocks = re.findall(r"(<tr[^>]*>.*?</tr>)", content, flags=re.DOTALL | re.IGNORECASE)
+    log.debug(f"HTML parse found {len(tr_blocks)} <tr> blocks")
+
+    for i, block in enumerate(tr_blocks):
+        # look for LDS-... patterns
         m_lds = re.search(r">(LDS[-A-Z0-9_]+)\s*<", block, flags=re.IGNORECASE)
         if not m_lds:
             m_lds = re.search(r"(LDS[-A-Z0-9_]+)", block, flags=re.IGNORECASE)
         if not m_lds:
             continue
         loadsheet_number = m_lds.group(1).strip()
-
-        # numeric id from 'more-menu-<id>' class inside the block (dropdown)
         m_id = re.search(r"more-menu-(\d+)", block)
-        if not m_id:
-            # sometimes the class is on a nested element - already searching the block covers that
-            continue
-        sheet_id = m_id.group(1)
-
-        # date (Month Day, Year) inside the row; pick the first occurrence
+        sheet_id = m_id.group(1) if m_id else None
         m_date = re.search(r"(\w+\s+\d{1,2},\s+\d{4})", block)
         date_text = m_date.group(1).strip() if m_date else ""
-
-        # total orders - try to find the first numeric span in second cell
-        m_total = re.search(
-            r"<td[^>]*>\s*<span[^>]*class=[\"'][^\"']*smaller-text[^\"']*[\"'][^>]*>\s*(\d+)\s*</span>",
-            block,
-            flags=re.IGNORECASE,
-        )
-        total_orders = m_total.group(1).strip() if m_total else ""
-
-        # status (badge or text) - look for dt-status cell text
-        m_status = re.search(r"class=[\"'][^\"']*dt-detail[^\"']*[\"'][^>]*>.*?(?:<span[^>]*>(.*?)</span>)", block, flags=re.IGNORECASE | re.DOTALL)
-        status = m_status.group(1).strip() if m_status and m_status.group(1) else ""
-        # fallback: any 'COMPLETED' or similar in block
-        if not status:
-            m_status2 = re.search(r"(COMPLETED|PENDING|OPEN|CLOSED|COMPLETED|COMPLETED\s*)", block, flags=re.IGNORECASE)
-            if m_status2:
-                status = m_status2.group(1).strip()
-
+        # total orders: find first numeric span after loadsheet
+        m_total = re.search(r"<td[^>]*>\s*<span[^>]*class=[\"'][^\"']*smaller-text[^\"']*[\"'][^>]*>\s*(\d+)\s*</span>", block, flags=re.IGNORECASE)
+        total = m_total.group(1) if m_total else ""
+        # status
+        m_status = re.search(r"dt-detail[^>]*>.*?<span[^>]*>(.*?)</span>", block, flags=re.IGNORECASE|re.DOTALL)
+        status = (m_status.group(1).strip() if m_status and m_status.group(1) else "")
         entry = {
+            "source": "html_parse",
+            "block_index": i,
             "loadsheet_number": loadsheet_number,
-            "loadsheet_id": sheet_id,
-            "total_orders": total_orders,
-            "date": date_text,
+            "sheet_id": sheet_id,
+            "total_orders": total,
+            "date_text": date_text,
             "status": status,
+            "block_snippet": block[:300].replace("\n", " "),
         }
+        log.debug(f"HTML candidate [{i}]: {loadsheet_number} id={sheet_id} date='{date_text}'")
+        results.append(entry)
+    return results
 
-        # filter by date match if date_text exists, else include (so we can debug later)
-        if date_text:
-            if matches_target_date(date_text):
-                log.debug(f"Matched target date row: {loadsheet_number} => id={sheet_id}")
-                results.append(entry)
-            else:
-                log.debug(f"Row date {date_text} does not match target -> skipping: {loadsheet_number}")
-        else:
-            # if no date found in block, still include for manual inspection
-            log.debug(f"No date found in block for {loadsheet_number}; included for inspection")
-            results.append(entry)
-
-    log.info(f"extract_sheet_ids_from_html -> found {len(results)} matching loadsheet(s)")
+def find_rows_in_frames(page):
+    """
+    Method C: inspect each frame's content for rows
+    """
+    results = []
+    log.info("Method C: scanning frames")
+    frames = page.frames
+    for idx, f in enumerate(frames):
+        try:
+            furl = f.url
+            log.debug(f"Frame[{idx}] url={furl}")
+            content = f.content()
+        except Exception as e:
+            log.debug(f"Frame[{idx}] content() failed: {e}")
+            continue
+        # reuse html parser
+        r = find_rows_html_parse(content)
+        # mark where each came from
+        for e in r:
+            e["frame_index"] = idx
+            e["frame_url"] = furl
+        results.extend(r)
+    log.info(f"Method C: found {len(results)} candidates across frames")
     return results
 
 # ---------------------------
-# Fetch orders from API
+# Click & capture network that happens when clicking the order count span
 # ---------------------------
-STATUS_OPTIONS = ["booked", "delivered", "returned", "reattempt", "cancelled"]
-
-def fetch_orders(session: requests.Session, sheet_id: str, status: str = "booked") -> list:
+def capture_requests_while_click(page, element_handle_or_selector, timeout=6):
     """
-    Calls API GET /load-sheet/{sheet_id}/order with params.
-    Supports pagination if API paginates via page/limit query params.
+    Attach request/response listeners, click element (selector string or ElementHandle),
+    and wait for network activity for 'timeout' seconds. Returns a dict with captured requests/responses.
     """
-    log.info(f"Fetching orders [{status}] for sheet {sheet_id}")
-    page_num = 1
-    page_size = 200
-    all_orders = []
-
-    while True:
-        url = f"{API_BASE}/{sheet_id}/order"
-        params = {
-            "loadSheetId": sheet_id,
-            "orderStatusOption": status,
-            "direction": "desc",
-            # server might support page/limit - include defaults
-            "page": page_num,
-            "limit": page_size,
-        }
-        log.debug(f"GET {url} params={params}")
-        try:
-            resp = session.get(url, params=params, timeout=30)
-        except requests.RequestException as e:
-            log.error(f"Request failed: {e}")
-            break
-
-        log.debug(f"HTTP {resp.status_code}")
-        if resp.status_code == 401:
-            log.error("401 Unauthorized - token may have expired")
-            break
-        if not resp.ok:
-            log.warning(f"HTTP {resp.status_code} - skipping further pages for this status")
-            break
-
-        try:
-            data = resp.json()
-        except ValueError:
-            log.warning("Response not JSON")
-            break
-
-        # possible shapes: list OR dict with keys 'data'/'result'/'orders'/'rows'/'dist'
-        if isinstance(data, list):
-            items = data
-        else:
-            items = (
-                data.get("data")
-                or data.get("result")
-                or data.get("orders")
-                or data.get("rows")
-                or data.get("dist")
-                or []
-            )
-
-        if not items:
-            log.debug("No items returned for this page/status")
-            break
-
-        if isinstance(items, list):
-            all_orders.extend(items)
-            log.info(f"Got {len(items)} orders (accumulated {len(all_orders)})")
-        else:
-            log.debug("Items is not a list - stop pagination")
-            break
-
-        # stop if fewer than page_size returned (last page)
-        if len(items) < page_size:
-            break
-        page_num += 1
-        time.sleep(0.2)
-
-    return all_orders
-
-# ---------------------------
-# Main orchestration
-# ---------------------------
-def main():
-    log.info("=" * 80)
-    log.info("POSTEX LOADSHEET SCRAPER - HTML PARSE + DIRECT API CALLS")
-    log.info("=" * 80)
-    output_file = OUTPUT_DIR / f"loadsheet_{DATE_TAG}.json"
-    log.info(f"Output -> {output_file}")
-
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-        context = browser.new_context()
-        page = context.new_page()
-        try:
-            # 1. Login
-            login(page)
-
-            # 2. Capture requests.Session with JWT + cookies
-            session = get_auth_session(page)
-
-            # 3. Navigate to LOADSHEET_URL and allow render
-            log.info(f"Navigating to loadsheet page: {LOADSHEET_URL}")
-            page.goto(LOADSHEET_URL, wait_until="domcontentloaded", timeout=60_000)
-            # give Angular time to paint DOM fragments
-            time.sleep(5)
-
-            # 4. Extract sheet ids from page HTML
-            sheets = extract_sheet_ids_from_html(page)
-            log.info(f"Found {len(sheets)} sheets matching date from page HTML")
-
-        except Exception as e:
-            log.error(f"Error while scraping page: {e}", exc_info=True)
-            sheets = []
-        finally:
-            browser.close()
-
-    if not sheets:
-        log.warning("No loadsheets found - writing empty result and exiting")
-        result = {
-            "scrape_date": DATE_TAG,
-            "target_date": f"{TARGET_MONTH} {TARGET_DAY}, {TARGET_YEAR}",
-            "loadsheets": [],
-            "error": "No loadsheets matched target date"
-        }
-        output_file.write_text(json.dumps(result, indent=2, ensure_ascii=False))
-        log.error(f"Saved empty result -> {output_file}")
-        return
-
-    # 5. For each sheet -> call APIs for statuses
-    final_data = []
-    for s in sheets:
-        sid = s["loadsheet_id"]
-        log.info(f"Processing sheet {s['loadsheet_number']} (id={sid})")
-        orders_by_status = {}
-        for status in STATUS_OPTIONS:
-            orders = fetch_orders(session, sid, status)
-            orders_by_status[status] = orders
-            # small delay between statuses
-            time.sleep(0.2)
-        s["orders_by_status"] = orders_by_status
-        final_data.append(s)
-
-    # 6. Build summary
-    total_orders_count = sum(
-        len(s["orders_by_status"].get("booked", []))
-        + len(s["orders_by_status"].get("delivered", []))
-        + len(s["orders_by_status"].get("returned", []))
-        + len(s["orders_by_status"].get("reattempt", []))
-        + len(s["orders_by_status"].get("cancelled", []))
-        for s in final_data
-    )
-
-    result = {
-        "scrape_date": DATE_TAG,
-        "target_date": f"{TARGET_MONTH} {TARGET_DAY}, {TARGET_YEAR}",
-        "loadsheets": final_data,
-        "total_loadsheets": len(final_data),
-        "summary": {
-            "total_orders_count": total_orders_count
-        }
+    captured = {
+        "requests": [],
+        "responses": [],
+        "matching_urls": [],
     }
 
-    output_file.write_text(json.dumps(result, indent=2, ensure_ascii=False))
-    log.info(f"Saved data -> {output_file}")
-    log.info(f"Summary: {result['summary']}")
-
-    # optional webhook
-    if N8N_WEBHOOK:
+    def on_request(request):
         try:
-            r = session.post(N8N_WEBHOOK, json=result, timeout=30)
-            r.raise_for_status()
-            log.info(f"Pushed to N8N webhook (HTTP {r.status_code})")
-        except Exception as e:
-            log.error(f"N8N webhook failed: {e}", exc_info=True)
-
-    log.info("=" * 80)
-    log.info("SCRAPER FINISHED")
-    log.info("=" * 80)
-
-
-if __name__ == "__main__":
-    main()
-
+            info = {
+                "url": request.url,
+               
+
