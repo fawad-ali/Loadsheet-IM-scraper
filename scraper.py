@@ -5,7 +5,7 @@ Logs into merchant.postex.pk, captures real loadsheet IDs
 from API responses, fetches all orders from PostEx APIs,
 and saves the data into JSON.
 
-Author: HEAVILY DEBUGGED VERSION - logs every single step
+Author: Updated with bulletproof date matching
 """
 
 import os
@@ -63,7 +63,7 @@ log.info(f"OUTPUT_DIR: {OUTPUT_DIR}")
 
 
 # ───────────────────────────────────────────────────────────────
-# Date Handling
+# Date Handling - BULLETPROOF
 # ───────────────────────────────────────────────────────────────
 
 DATE_OVERRIDE = os.environ.get("DATE_OVERRIDE")
@@ -85,11 +85,48 @@ else:
 
 DATE_TAG = TARGET_DATE.strftime("%Y-%m-%d")
 
-TARGET_LABEL = TARGET_DATE.strftime("%b %-d, %Y")
+# Create target date components for matching
+TARGET_MONTH = TARGET_DATE.strftime("%b")  # e.g., "May"
+TARGET_DAY = TARGET_DATE.day  # e.g., 9 (as integer)
+TARGET_YEAR = TARGET_DATE.year  # e.g., 2026
 
 log.info(f"TARGET_DATE: {TARGET_DATE}")
 log.info(f"DATE_TAG: {DATE_TAG}")
-log.info(f"TARGET_LABEL: {TARGET_LABEL}")
+log.info(f"Target date components: {TARGET_MONTH} {TARGET_DAY}, {TARGET_YEAR}")
+
+
+def matches_target_date(date_text):
+    """
+    Bulletproof date matching.
+    Matches dates like "May 9, 2026, 9:16:58 PM" or "May 09, 2026" or variations.
+    """
+    log.debug(f"Checking if '{date_text}' matches target date...")
+    
+    # Remove leading/trailing whitespace
+    date_text = date_text.strip()
+    
+    # Extract month, day, year using regex
+    # Pattern: "Month DD, YYYY" (supports optional leading zeros on day)
+    match = re.search(r"(\w+)\s+(\d{1,2}),\s+(\d{4})", date_text)
+    
+    if not match:
+        log.debug(f"✗ Could not parse date from: '{date_text}'")
+        return False
+    
+    parsed_month = match.group(1)  # e.g., "May"
+    parsed_day = int(match.group(2))  # e.g., 9
+    parsed_year = int(match.group(3))  # e.g., 2026
+    
+    log.debug(f"  Parsed from text: month={parsed_month}, day={parsed_day}, year={parsed_year}")
+    log.debug(f"  Target:           month={TARGET_MONTH}, day={TARGET_DAY}, year={TARGET_YEAR}")
+    
+    # Check all three components
+    if parsed_month == TARGET_MONTH and parsed_day == TARGET_DAY and parsed_year == TARGET_YEAR:
+        log.debug(f"✓ Date MATCHES!")
+        return True
+    else:
+        log.debug(f"✗ Date does not match")
+        return False
 
 
 # ───────────────────────────────────────────────────────────────
@@ -214,7 +251,7 @@ def scrape_loadsheet_ids(page):
     log.info(">>> STEP 3: SCRAPE LOADSHEET IDS START")
 
     log.info(
-        f"Opening loadsheet page for: {TARGET_LABEL}"
+        f"Opening loadsheet page"
     )
 
     page.goto(
@@ -294,15 +331,13 @@ def scrape_loadsheet_ids(page):
                 .strip()
             )
 
-            log.debug(f"Cell 5 (Date): {date_text}")
-            log.debug(f"Target Label: {TARGET_LABEL}")
+            log.debug(f"Cell 5 (Date): '{date_text}'")
 
-            # Check if date matches target
-            if TARGET_LABEL not in date_text:
-                log.debug(f"✗ Date '{date_text}' does NOT contain '{TARGET_LABEL}' - SKIPPING")
+            # Use bulletproof date matching
+            if not matches_target_date(date_text):
                 continue
 
-            log.info(f"✓ Date MATCHES: {date_text}")
+            log.info(f"✓✓ DATE MATCHES: '{date_text}'")
 
             # Extract loadsheet number from cell 0
             loadsheet_number = (
@@ -542,7 +577,7 @@ def fetch_orders(
 def main():
 
     log.info("=" * 80)
-    log.info("=== POSTEX LOADSHEET SCRAPER - FULLY DEBUGGED VERSION ===")
+    log.info("=== POSTEX LOADSHEET SCRAPER - BULLETPROOF DATE MATCHING ===")
     log.info("=" * 80)
 
     output_file = (
@@ -551,10 +586,6 @@ def main():
     )
 
     log.info(f"Output file will be: {output_file}")
-
-    log.info(
-        f"Target date: {TARGET_LABEL}"
-    )
 
     with sync_playwright() as pw:
 
@@ -608,14 +639,14 @@ def main():
     if not loadsheets:
 
         log.warning(
-            f"✗ No loadsheets found for date {TARGET_LABEL}"
+            f"✗ No loadsheets found"
         )
 
         result = {
 
             "scrape_date": DATE_TAG,
 
-            "target_date": TARGET_LABEL,
+            "target_date": f"{TARGET_MONTH} {TARGET_DAY}, {TARGET_YEAR}",
 
             "loadsheets": [],
 
@@ -685,7 +716,7 @@ def main():
 
         "scrape_date": DATE_TAG,
 
-        "target_date": TARGET_LABEL,
+        "target_date": f"{TARGET_MONTH} {TARGET_DAY}, {TARGET_YEAR}",
 
         "loadsheets": final_data,
 
