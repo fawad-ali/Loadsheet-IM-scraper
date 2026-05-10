@@ -1,8 +1,23 @@
 {
   "scrape_date": "2026-05-09",
   "target_date": "May 9, 2026",
-  "loadsheets": [],
-  "debug": {
-    "rows_found": []
-  }
+  "loadsheets": [
+    {
+      "row_index": 0,
+      "loadsheet_number": "LDS-ES7BY484060",
+      "sheet_id": "4786",
+      "date_text": "May 9, 2026, 4:16:58 PM",
+      "status": "COMPLETED",
+      "total_orders": "28",
+      "final_sheet_id": "4786",
+      "api_result": {
+        "orders": {
+          "statusCode": "015",
+          "statusMessage": "Invalid request parameter. Please contact to the administration",
+          "statusMessageDetail": "Invalid request parameters"
+        },
+        "status_code": 400
+      }
+    }
+  ]
 }
