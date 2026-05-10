@@ -1,11 +1,11 @@
 """
 PostEx Loadsheet Scraper
 ========================
-Logs into merchant.postex.pk, captures real loadsheet IDs
-from API responses, fetches all orders from PostEx APIs,
+Logs into merchant.postex.pk, captures loadsheet data
+from the modal table that opens when clicking rows,
 and saves the data into JSON.
 
-Author: Updated with bulletproof date matching
+Author: FIXED - Extracts data from modal instead of API
 """
 
 import os
@@ -176,7 +176,7 @@ def login(page):
 
 # ───────────────────────────────────────────────────────────────
 # Auth Session
-# ───────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────��───────────────────
 
 def get_auth_session(page):
 
@@ -242,71 +242,129 @@ def get_auth_session(page):
 
 
 # ───────────────────────────────────────────────────────────────
-# Loadsheet Fetching with Improved Logic
+# Extract Orders from Modal
+# ───────────────────────────────────────────────────────────────
+
+def extract_orders_from_modal(page):
+    """
+    Extract orders from the modal table that's currently displayed.
+    Modal HTML structure:
+    <table id="export-excel-table">
+      <tbody>
+        <tr>
+          <td>Sr.No</td>
+          <td>Order Ref (IM-xxxxx)</td>
+          <td>Tracking #</td>
+          <td>Date</td>
+          <td>Status</td>
+          <td>Name</td>
+          <td>Phone</td>
+          <td>Amount</td>
+        </tr>
+      </tbody>
+    </table>
+    """
+    
+    log.debug("Extracting orders from modal table...")
+    
+    try:
+        # Wait for the modal table to be visible
+        page.wait_for_selector("table#export-excel-table tbody tr", timeout=5000)
+        log.debug("✓ Modal table found")
+    except Exception as e:
+        log.warning(f"✗ Could not find modal table: {e}")
+        return []
+    
+    time.sleep(1)  # Give it a moment to render
+    
+    rows = page.query_selector_all("table#export-excel-table tbody tr")
+    
+    log.debug(f"Found {len(rows)} order rows in modal")
+    
+    orders = []
+    
+    for idx, row in enumerate(rows):
+        try:
+            cells = row.query_selector_all("td")
+            
+            if len(cells) < 8:
+                log.debug(f"Row {idx} has only {len(cells)} cells, skipping")
+                continue
+            
+            sr_no = cells[0].inner_text().strip()
+            order_ref = cells[1].inner_text().strip()
+            tracking = cells[2].inner_text().strip()
+            date_time = cells[3].inner_text().strip()
+            status = cells[4].inner_text().strip()
+            name = cells[5].inner_text().strip()
+            phone = cells[6].inner_text().strip()
+            amount = cells[7].inner_text().strip()
+            
+            log.debug(f"  Order {sr_no}: {order_ref} - {amount}")
+            
+            orders.append({
+                "sr_no": sr_no,
+                "order_ref": order_ref,
+                "tracking": tracking,
+                "date": date_time,
+                "status": status,
+                "name": name,
+                "phone": phone,
+                "amount": amount
+            })
+        
+        except Exception as e:
+            log.warning(f"✗ Failed to extract row {idx}: {e}")
+    
+    log.info(f"✓ Extracted {len(orders)} orders from modal")
+    return orders
+
+
+# ───────────────────────────────────────────────────────────────
+# Loadsheet Fetching
 # ───────────────────────────────────────────────────────────────
 
 
-def scrape_loadsheet_ids(page):
+def scrape_loadsheet_rows(page):
 
-    log.info(">>> STEP 3: SCRAPE LOADSHEET IDS START")
+    log.info(">>> STEP 3: SCRAPE LOADSHEET ROWS START")
 
-    log.info(
-        f"Opening loadsheet page"
-    )
+    log.info(f"Opening loadsheet page: {LOADSHEET_URL}")
 
-    page.goto(
-        LOADSHEET_URL,
-        wait_until="domcontentloaded",
-        timeout=60000
-    )
+    page.goto(LOADSHEET_URL, wait_until="domcontentloaded", timeout=60000)
 
     log.debug(f"Loadsheet page URL: {page.url}")
     log.debug(f"Page title: {page.title()}")
 
-    # Give Angular time to render
-    log.debug("Waiting 10 seconds for Angular to render...")
-    time.sleep(10)
-
-    # Wait for table rows to load
-    rows = []
-
-    for i in range(30):
-
-        rows = page.query_selector_all("tr.data-item")
-
-        log.debug(f"  Attempt {i+1}/30: Found {len(rows)} rows")
-
-        if rows:
-            log.debug(f"✓ Found {len(rows)} rows on attempt {i+1}")
+    # Wait for the actual loadsheet page to load
+    log.debug("Waiting for loadsheet table to load...")
+    
+    for attempt in range(15):
+        try:
+            page.wait_for_selector("table#excel-table tbody tr.data-item", timeout=2000)
+            log.debug(f"✓ Table found on attempt {attempt + 1}")
             break
-
-        time.sleep(2)
-
-    if not rows:
-
-        log.error(
-            "✗ NO LOADSHEET ROWS FOUND!"
-        )
-
-        # Save page HTML for debugging
-        html = page.content()
-
-        debug_html_path = OUTPUT_DIR / "debug_page.html"
-
-        with open(
-            debug_html_path,
-            "w",
-            encoding="utf-8"
-        ) as f:
-            f.write(html)
-
-        log.error(f"✗ Debug HTML saved to: {debug_html_path}")
-
+        except:
+            log.debug(f"Attempt {attempt + 1}: table not found yet, waiting...")
+            time.sleep(2)
+    else:
+        log.error("✗ Table never appeared!")
         return []
 
-    log.info(
-        f"✓ Found {len(rows)} table rows total"
-    )
+    time.sleep(3)  # Extra wait for Angular to fully render
+
+    rows = page.query_selector_all("table#excel-table tbody tr.data-item")
+
+    log.info(f"✓ Found {len(rows)} loadsheet rows")
+
+    if not rows:
+        log.error("✗ No loadsheet rows found!")
+        html = page.content()
+        debug_html_path = OUTPUT_DIR / "debug_page.html"
+        with open(debug_html_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        log.error(f"✗ Debug HTML saved to: {debug_html_path}")
+        return []
 
     results = []
 
@@ -314,7 +372,7 @@ def scrape_loadsheet_ids(page):
 
         try:
 
-            log.debug(f"\n--- Processing Row {idx+1} ---")
+            log.debug(f"\n--- Processing Loadsheet Row {idx+1} ---")
 
             cells = row.query_selector_all("td")
 
@@ -324,135 +382,63 @@ def scrape_loadsheet_ids(page):
                 log.debug(f"✗ Row has {len(cells)} cells, need 7+ - SKIPPING")
                 continue
 
-            # Extract date from cell 5
-            date_text = (
-                cells[5]
-                .inner_text()
-                .strip()
-            )
+            # Cell structure from the HTML you provided:
+            # 0: LoadSheet #
+            # 1: Total Orders (as span with click handler)
+            # 2: Picked
+            # 3: Unpicked
+            # 4: Rider Name
+            # 5: Date
+            # 6: Status
+            # 7: Action (dropdown menu)
 
-            log.debug(f"Cell 5 (Date): '{date_text}'")
+            loadsheet_number = cells[0].inner_text().strip()
+            total_orders_text = cells[1].inner_text().strip()
+            date_text = cells[5].inner_text().strip()
+            status = cells[6].inner_text().strip()
 
-            # Use bulletproof date matching
+            log.debug(f"Loadsheet #: {loadsheet_number}")
+            log.debug(f"Total Orders: {total_orders_text}")
+            log.debug(f"Date: {date_text}")
+            log.debug(f"Status: {status}")
+
+            # Check if date matches
             if not matches_target_date(date_text):
                 continue
 
-            log.info(f"✓✓ DATE MATCHES: '{date_text}'")
+            log.info(f"✓✓ DATE MATCHES: {loadsheet_number}")
 
-            # Extract loadsheet number from cell 0
-            loadsheet_number = (
-                cells[0]
-                .inner_text()
-                .strip()
-            )
-
-            log.debug(f"Cell 0 (Loadsheet #): {loadsheet_number}")
-
-            # Extract total orders from cell 1
-            total_orders_text = (
-                cells[1]
-                .inner_text()
-                .strip()
-            )
-
-            log.debug(f"Cell 1 (Total Orders): {total_orders_text}")
-
-            # Extract status from cell 6
-            status = (
-                cells[6]
-                .inner_text()
-                .strip()
-            )
-
-            log.debug(f"Cell 6 (Status): {status}")
-
-            log.info(
-                f"Matched row: {loadsheet_number} "
-                f"({total_orders_text} orders, status: {status})"
-            )
-
-            captured_sheet_id = []
-
-            def capture_response(response):
-                """Capture API response to extract loadsheet ID"""
-                log.debug(f"Response event: {response.url}")
-                
-                if "/load-sheet/" in response.url and "/order" in response.url:
-                    log.debug(f"✓ Found matching API response URL: {response.url}")
-                    
-                    match = re.search(
-                        r"/load-sheet/(\d+)/order",
-                        response.url
-                    )
-                    if match:
-                        sid = match.group(1)
-                        captured_sheet_id.append(sid)
-                        log.info(
-                            f"✓✓✓ CAPTURED LOADSHEET ID: {sid}"
-                        )
-                    else:
-                        log.debug(f"✗ Regex did not match URL: {response.url}")
-
-            # Listen for API responses
-            log.debug("Attaching response listener...")
-            page.on(
-                "response",
-                capture_response
-            )
-
-            # Click on the order count span in cell 1 to trigger API call
-            log.debug("Looking for order span in cell 1...")
-            order_span = cells[1].query_selector("span")
+            # Click on the total orders count to open the modal
+            log.info(f"Clicking on orders count for {loadsheet_number}...")
             
-            if order_span:
-                log.debug(f"✓ Found order span: {order_span.inner_text()}")
-                log.info(
-                    f"Clicking order count span for "
-                    f"{loadsheet_number}"
-                )
-                order_span.click()
-                log.debug("Clicked, waiting 3 seconds for API response...")
-                time.sleep(3)
-            else:
-                log.warning(
-                    f"✗ Could not find order span in cell 1 for {loadsheet_number}"
-                )
-
-            # Remove response listener
-            log.debug("Removing response listener...")
-            page.remove_listener(
-                "response",
-                capture_response
-            )
-
-            # If we got an ID from the API response, use it
-            if captured_sheet_id:
-                sheet_id = captured_sheet_id[0]
-                log.info(
-                    f"✓✓ Successfully captured ID: {sheet_id}"
-                )
-            else:
-                # Fallback: try to extract from the loadsheet number if it's available
-                log.warning(
-                    f"✗ No ID captured from API for "
-                    f"{loadsheet_number}"
-                )
-                log.debug(f"Captured sheet ID list was empty")
+            order_span = cells[1].query_selector("span")
+            if not order_span:
+                log.warning(f"✗ Could not find order span")
                 continue
+            
+            order_span.click()
+            
+            log.debug("Waiting for modal to appear...")
+            time.sleep(2)
 
-            log.info(f"✓ Adding loadsheet to results: {loadsheet_number} => {sheet_id}")
+            # Extract orders from the modal
+            orders = extract_orders_from_modal(page)
 
+            # Close the modal
+            log.debug("Closing modal...")
+            page.keyboard.press("Escape")
+            time.sleep(1)
+
+            # Add to results
             results.append({
-
                 "loadsheet_number": loadsheet_number,
-                "loadsheet_id": sheet_id,
                 "total_orders": total_orders_text,
                 "date": date_text,
-                "status": status
-
+                "status": status,
+                "orders": orders
             })
 
-            time.sleep(1)
+            log.info(f"✓ Added loadsheet: {loadsheet_number}")
 
         except Exception as e:
 
@@ -461,113 +447,9 @@ def scrape_loadsheet_ids(page):
                 exc_info=True
             )
 
-    log.info(
-        f"✓ STEP 3 COMPLETE: Matched {len(results)} loadsheets"
-    )
+    log.info(f"✓ STEP 3 COMPLETE: Matched {len(results)} loadsheets")
 
     return results
-
-
-# ───────────────────────────────────────────────────────────────
-# Orders Fetching
-# ───────────────────────────────────────────────────────────────
-
-def fetch_orders(
-    session,
-    sheet_id,
-    status="booked"
-):
-
-    log.debug(f">>> fetch_orders({sheet_id}, {status})")
-
-    url = (
-        f"{API_BASE}/{sheet_id}/order"
-    )
-
-    params = {
-
-        "loadSheetId": sheet_id,
-
-        "orderStatusOption": status,
-
-        "direction": "desc"
-    }
-
-    log.debug(f"URL: {url}")
-    log.debug(f"Params: {params}")
-
-    try:
-
-        log.info(
-            f"Fetching {status} orders "
-            f"for sheet {sheet_id}..."
-        )
-
-        response = session.get(
-            url,
-            params=params,
-            timeout=30
-        )
-
-        log.debug(
-            f"Response status: {response.status_code}"
-        )
-
-        log.info(
-            f"[{sheet_id}] {status} -> HTTP {response.status_code}"
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        log.debug(f"Response type: {type(data)}")
-
-        # Debug: log response structure
-        if isinstance(data, dict):
-
-            log.debug(
-                f"Response is dict with keys: {list(data.keys())}"
-            )
-
-        if isinstance(data, list):
-            log.info(
-                f"✓ Got {len(data)} items as list"
-            )
-            return data
-
-        # Try different possible response structures
-        log.debug("Trying to extract orders from response...")
-
-        result = (
-            data.get("data")
-            or data.get("result")
-            or data.get("orders")
-            or data.get("rows")
-            or data.get("dist")
-            or []
-        )
-
-        log.debug(f"Extracted result type: {type(result)}")
-
-        if isinstance(result, list):
-            log.info(
-                f"✓ Got {len(result)} items from data structure"
-            )
-            return result
-
-        log.warning(f"Result is not a list, returning empty")
-
-        return []
-
-    except Exception as e:
-
-        log.error(
-            f"✗ Failed fetching {status} for sheet {sheet_id}: {e}",
-            exc_info=True
-        )
-
-        return []
 
 
 # ───────────────────────────────────────────────────────────────
@@ -577,13 +459,10 @@ def fetch_orders(
 def main():
 
     log.info("=" * 80)
-    log.info("=== POSTEX LOADSHEET SCRAPER - BULLETPROOF DATE MATCHING ===")
+    log.info("=== POSTEX LOADSHEET SCRAPER - MODAL EXTRACTION ===")
     log.info("=" * 80)
 
-    output_file = (
-        OUTPUT_DIR
-        / f"loadsheet_{DATE_TAG}.json"
-    )
+    output_file = OUTPUT_DIR / f"loadsheet_{DATE_TAG}.json"
 
     log.info(f"Output file will be: {output_file}")
 
@@ -592,9 +471,7 @@ def main():
         log.debug("Launching Chromium browser...")
 
         browser = pw.chromium.launch(
-
             headless=True,
-
             args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage"
@@ -603,13 +480,9 @@ def main():
 
         log.debug("✓ Browser launched")
 
-        log.debug("Creating new context...")
-
         context = browser.new_context()
 
         log.debug("✓ Context created")
-
-        log.debug("Creating new page...")
 
         page = context.new_page()
 
@@ -622,8 +495,8 @@ def main():
             # Authenticated requests session
             session = get_auth_session(page)
 
-            # Get loadsheets
-            loadsheets = scrape_loadsheet_ids(page)
+            # Get loadsheets and extract orders from modals
+            loadsheets = scrape_loadsheet_rows(page)
 
             log.info(f"Scraping complete. Found {len(loadsheets)} loadsheets")
 
@@ -638,110 +511,38 @@ def main():
 
     if not loadsheets:
 
-        log.warning(
-            f"✗ No loadsheets found"
-        )
+        log.warning(f"✗ No loadsheets found")
 
         result = {
-
             "scrape_date": DATE_TAG,
-
             "target_date": f"{TARGET_MONTH} {TARGET_DAY}, {TARGET_YEAR}",
-
             "loadsheets": [],
-
             "error": "No loadsheets matched target date"
         }
 
-        log.debug(f"Writing empty result to {output_file}")
-
         output_file.write_text(
-            json.dumps(
-                result,
-                indent=2,
-                ensure_ascii=False
-            )
+            json.dumps(result, indent=2, ensure_ascii=False)
         )
 
         log.error(f"✗ Saved empty result to {output_file}")
-
         return
 
-    log.info(f"✓ Found {len(loadsheets)} loadsheets, fetching orders...")
-
-    # Fetch orders for each loadsheet
-    final_data = []
-
-    for sheet in loadsheets:
-
-        sid = sheet["loadsheet_id"]
-
-        log.info(
-            f"Processing sheet {sid}"
-        )
-
-        sheet_orders = {
-            "booked": [],
-            "delivered": [],
-            "returned": [],
-            "reattempt": [],
-            "cancelled": []
-        }
-
-        # Fetch all order statuses
-        for status_key in sheet_orders.keys():
-            log.info(
-                f"  Fetching {status_key} orders for sheet {sid}"
-            )
-
-            orders = fetch_orders(
-                session,
-                sid,
-                status_key
-            )
-
-            sheet_orders[status_key] = orders
-
-            log.info(
-                f"  ✓ Got {len(orders)} {status_key} orders"
-            )
-
-            time.sleep(1)
-
-        sheet["orders_by_status"] = sheet_orders
-
-        final_data.append(sheet)
+    log.info(f"✓ Found {len(loadsheets)} loadsheets with orders")
 
     result = {
-
         "scrape_date": DATE_TAG,
-
         "target_date": f"{TARGET_MONTH} {TARGET_DAY}, {TARGET_YEAR}",
-
-        "loadsheets": final_data,
-
-        "total_loadsheets": len(final_data),
-
+        "loadsheets": loadsheets,
+        "total_loadsheets": len(loadsheets),
         "summary": {
-            "total_booked": sum(
-                len(s["orders_by_status"]["booked"])
-                for s in final_data
+            "total_orders": sum(
+                len(ls["orders"]) for ls in loadsheets
             ),
-            "total_delivered": sum(
-                len(s["orders_by_status"]["delivered"])
-                for s in final_data
-            ),
-            "total_returned": sum(
-                len(s["orders_by_status"]["returned"])
-                for s in final_data
-            ),
-            "total_reattempt": sum(
-                len(s["orders_by_status"]["reattempt"])
-                for s in final_data
-            ),
-            "total_cancelled": sum(
-                len(s["orders_by_status"]["cancelled"])
-                for s in final_data
+            "total_amount_pkr": sum(
+                float(o["amount"].replace(",", "")) 
+                for ls in loadsheets 
+                for o in ls["orders"]
+                if o["amount"] and o["amount"] != "0.00"
             )
         }
     }
@@ -749,46 +550,20 @@ def main():
     log.debug(f"Writing result to {output_file}")
 
     output_file.write_text(
-
-        json.dumps(
-            result,
-            indent=2,
-            ensure_ascii=False
-        )
+        json.dumps(result, indent=2, ensure_ascii=False)
     )
 
-    log.info(
-        f"✓ Saved data -> {output_file}"
-    )
-
-    log.info(
-        f"✓ Summary: {result['summary']}"
-    )
+    log.info(f"✓ Saved data -> {output_file}")
+    log.info(f"✓ Summary: {result['summary']}")
 
     # Optional webhook
-
     if N8N_WEBHOOK:
-
         try:
-
             log.info("Sending to N8N webhook...")
-
-            r = session.post(
-                N8N_WEBHOOK,
-                json=result,
-                timeout=30
-            )
-
-            log.info(
-                f"✓ Webhook sent ({r.status_code})"
-            )
-
+            r = session.post(N8N_WEBHOOK, json=result, timeout=30)
+            log.info(f"✓ Webhook sent ({r.status_code})")
         except Exception as e:
-
-            log.error(
-                f"✗ Webhook failed: {e}",
-                exc_info=True
-            )
+            log.error(f"✗ Webhook failed: {e}", exc_info=True)
 
     log.info("=" * 80)
     log.info("=== SCRAPER FINISHED ===")
