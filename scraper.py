@@ -177,155 +177,163 @@ def get_auth_session(page):
 
 def scrape_loadsheet_ids(page):
 
-    captured_data = []
-
-    def capture_response(response):
-
-        try:
-
-            url = response.url
-
-            if (
-                "/load-sheet" in url
-                and response.status == 200
-            ):
-
-                content_type = response.headers.get(
-                    "content-type",
-                    ""
-                )
-
-                if "application/json" not in content_type:
-                    return
-
-                data = response.json()
-
-                if isinstance(data, dict):
-
-                    possible = (
-                        data.get("data")
-                        or data.get("result")
-                        or data.get("rows")
-                    )
-
-                    if isinstance(possible, list):
-
-                        captured_data.extend(possible)
-
-                elif isinstance(data, list):
-
-                    captured_data.extend(data)
-
-        except Exception:
-            pass
-
-    page.on(
-        "response",
-        capture_response
+    log.info(
+        f"Opening loadsheet page for "
+        f"{TARGET_LABEL}"
     )
-
-    log.info("Opening loadsheet logs page...")
 
     page.goto(
         LOADSHEET_URL,
         wait_until="networkidle"
     )
 
-    # Wait longer for Angular requests
-    time.sleep(10)
+    page.wait_for_selector(
+        "tbody tr",
+        timeout=30000
+    )
+
+    rows = page.query_selector_all(
+        "tbody tr"
+    )
 
     log.info(
-        f"Captured {len(captured_data)} "
-        f"API objects"
+        f"Found {len(rows)} table rows"
     )
 
     results = []
 
-    for item in captured_data:
+    for idx, row in enumerate(rows):
 
         try:
 
-            item_str = json.dumps(item)
+            cells = row.query_selector_all("td")
+
+            if len(cells) < 7:
+                continue
+
+            date_text = (
+                cells[5]
+                .inner_text()
+                .strip()
+            )
 
             # Match target date
-            if TARGET_LABEL not in item_str:
+            if TARGET_LABEL not in date_text:
                 continue
 
-            # Try all common ID fields
-            loadsheet_id = (
-                item.get("id")
-                or item.get("loadSheetId")
-                or item.get("loadsheetId")
-                or item.get("_id")
-            )
-
-            if not loadsheet_id:
-                continue
-
-            # Try all common code fields
             loadsheet_number = (
-                item.get("loadSheetCode")
-                or item.get("loadsheetCode")
-                or item.get("code")
-                or item.get("sheetCode")
-                or ""
-            )
-
-            # Date
-            created_at = (
-                item.get("createdAt")
-                or item.get("created_at")
-                or item.get("date")
-                or ""
+                cells[0]
+                .inner_text()
+                .strip()
             )
 
             total_orders = (
-                item.get("totalOrders")
-                or item.get("orderCount")
-                or item.get("total")
-                or 0
+                cells[1]
+                .inner_text()
+                .strip()
             )
 
-            result = {
+            status = (
+                cells[6]
+                .inner_text()
+                .strip()
+            )
+
+            log.info(
+                f"Matching loadsheet row: "
+                f"{loadsheet_number}"
+            )
+
+            captured_sheet_id = []
+
+            def capture_request(request):
+
+                url = request.url
+
+                match = re.search(
+                    r"/load-sheet/(\d+)/order",
+                    url
+                )
+
+                if match:
+
+                    sid = match.group(1)
+
+                    captured_sheet_id.append(sid)
+
+                    log.info(
+                        f"Captured ID: {sid}"
+                    )
+
+            page.on(
+                "request",
+                capture_request
+            )
+
+            # Open dropdown
+            menu_btn = row.query_selector(
+                "a.toggle-tigger"
+            )
+
+            if menu_btn:
+                menu_btn.click()
+
+                time.sleep(1)
+
+            # Click Print
+            print_btn = row.query_selector(
+                'a[data-target="#r2pPrint"]'
+            )
+
+            if print_btn:
+
+                print_btn.click()
+
+                time.sleep(3)
+
+            page.remove_listener(
+                "request",
+                capture_request
+            )
+
+            if not captured_sheet_id:
+
+                log.warning(
+                    f"No sheet ID found for "
+                    f"{loadsheet_number}"
+                )
+
+                continue
+
+            sheet_id = captured_sheet_id[0]
+
+            results.append({
 
                 "loadsheet_number": loadsheet_number,
 
-                "loadsheet_id": str(loadsheet_id),
+                "loadsheet_id": sheet_id,
 
-                "total_orders": total_orders,
+                "total_orders": int(total_orders),
 
-                "date": created_at,
+                "date": date_text,
 
-                "status": item.get(
-                    "status",
-                    ""
-                )
-            }
+                "status": status
+            })
 
-            # Prevent duplicates
-            already = any(
-                x["loadsheet_id"] == result["loadsheet_id"]
-                for x in results
-            )
+            # Close modal if opened
+            page.keyboard.press("Escape")
 
-            if not already:
-
-                results.append(result)
-
-                log.info(
-                    f"Found loadsheet: "
-                    f"{loadsheet_number} "
-                    f"(ID={loadsheet_id})"
-                )
+            time.sleep(1)
 
         except Exception as e:
 
-            log.warning(
-                f"Failed parsing loadsheet: {e}"
+            log.error(
+                f"Failed row {idx}: {e}"
             )
 
     log.info(
-        f"Final matched loadsheets: {len(results)}"
+        f"Matched loadsheets: "
+        f"{len(results)}"
     )
 
     return results
