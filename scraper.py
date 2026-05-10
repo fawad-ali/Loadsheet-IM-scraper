@@ -1,41 +1,45 @@
 # name=scraper.py
 
 """
-PostEx Loadsheet Scraper - Full verbose debug edition
+PostEx Loadsheet Scraper
+ULTRA VERBOSE FORENSIC DEBUG EDITION
 
-FIXED VERSION
-
-What this file does:
-- Logs into merchant.postex.pk using Playwright
-- Captures JWT + cookies
-- Finds loadsheet rows
-- Captures ALL browser API calls
-- Logs exact API URLs
-- Saves raw API responses
-- Calls PostEx API directly
-- Saves everything into JSON debug output
-
-FIXES INCLUDED:
-- Completed broken function capture_requests_while_click()
-- Fixed incomplete code ending
-- Fixed serialization issues with ElementHandle
-- Fixed page listener cleanup
-- Fixed request/response capture
-- Added safe JSON handling
-- Added direct API debug logging
-- Added browser network capture
+Features:
+- Full Playwright tracing
+- HAR recording
+- Browser console capture
+- Request/response interception
+- Full HTML dumps
+- Full screenshots
+- Full API logging
+- Full row diagnostics
+- Full exception stack traces
+- Timing metrics
+- Network archive generation
+- Retry wrapper
+- Storage dump
+- Cookie dump
+- Request failure capture
+- Click-to-network tracing
+- Direct API replay logging
 """
 
 import os
 import re
 import json
 import time
+import traceback
 import logging
+
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+from playwright.sync_api import (
+    sync_playwright,
+    TimeoutError as PWTimeout
+)
 
 
 # ---------------------------------------------------------
@@ -43,11 +47,48 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 # ---------------------------------------------------------
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.NOTSET,
     format="%(asctime)s [%(levelname)s] %(funcName)s:%(lineno)d | %(message)s",
 )
 
 log = logging.getLogger("postex-scraper")
+
+
+# ---------------------------------------------------------
+# Ultra Verbose Logger
+# ---------------------------------------------------------
+
+STEP_COUNTER = 0
+
+
+def trace(message, data=None):
+
+    global STEP_COUNTER
+
+    STEP_COUNTER += 1
+
+    prefix = f"[STEP {STEP_COUNTER:05d}]"
+
+    if data is not None:
+
+        try:
+
+            pretty = json.dumps(
+                data,
+                indent=2,
+                ensure_ascii=False,
+                default=str
+            )
+
+        except Exception:
+
+            pretty = str(data)
+
+        log.debug(f"{prefix} {message}\n{pretty}")
+
+    else:
+
+        log.debug(f"{prefix} {message}")
 
 
 # ---------------------------------------------------------
@@ -66,8 +107,6 @@ USERNAME = os.environ.get("POSTEX_USERNAME", "")
 
 PASSWORD = os.environ.get("POSTEX_PASSWORD", "")
 
-N8N_WEBHOOK = os.environ.get("N8N_WEBHOOK_URL", "")
-
 OUTPUT_DIR = Path("data")
 
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -75,6 +114,26 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 DEBUG_DIR = OUTPUT_DIR / "debug"
 
 DEBUG_DIR.mkdir(exist_ok=True)
+
+
+# ---------------------------------------------------------
+# Environment Debug
+# ---------------------------------------------------------
+
+trace("Environment variables loaded", {
+
+    "BASE_URL": BASE_URL,
+
+    "LOGIN_URL": LOGIN_URL,
+
+    "LOADSHEET_URL": LOADSHEET_URL,
+
+    "USERNAME_EXISTS": bool(USERNAME),
+
+    "PASSWORD_EXISTS": bool(PASSWORD),
+
+    "OUTPUT_DIR": str(OUTPUT_DIR),
+})
 
 
 # ---------------------------------------------------------
@@ -116,19 +175,117 @@ OUTPUT_FILE = (
 
 def write_json(path, data):
 
+    trace(
+        f"Writing JSON -> {path}"
+    )
+
     path.write_text(
 
         json.dumps(
             data,
             indent=2,
-            ensure_ascii=False
+            ensure_ascii=False,
+            default=str
         ),
 
         encoding="utf-8"
     )
 
 
+def dump_html(page, name):
+
+    try:
+
+        html = page.content()
+
+        path = DEBUG_DIR / f"{name}.html"
+
+        path.write_text(
+            html,
+            encoding="utf-8"
+        )
+
+        trace(
+            f"HTML dumped -> {path}"
+        )
+
+    except Exception:
+
+        log.exception("HTML dump failed")
+
+
+def screenshot(page, name):
+
+    try:
+
+        path = DEBUG_DIR / f"{name}.png"
+
+        page.screenshot(
+            path=str(path),
+            full_page=True
+        )
+
+        trace(
+            f"Screenshot saved -> {path}"
+        )
+
+    except Exception:
+
+        log.exception("Screenshot failed")
+
+
+def timed(label):
+
+    start = time.time()
+
+    trace(f"START -> {label}")
+
+    def done():
+
+        duration = time.time() - start
+
+        trace(
+            f"END -> {label}",
+            {
+                "seconds": duration
+            }
+        )
+
+    return done
+
+
+def retry(fn, retries=3):
+
+    for attempt in range(retries):
+
+        try:
+
+            trace(
+                f"Retry attempt {attempt+1}"
+            )
+
+            return fn()
+
+        except Exception:
+
+            log.exception(
+                f"Retry {attempt+1} failed"
+            )
+
+            time.sleep(2)
+
+    raise Exception("All retries failed")
+
+
 def matches_target_date(date_text):
+
+    trace(
+        "Checking date match",
+        {
+            "incoming": date_text,
+            "target": TARGET_LABEL
+        }
+    )
 
     if not date_text:
         return False
@@ -141,6 +298,12 @@ def matches_target_date(date_text):
     )
 
     if not m:
+
+        trace(
+            "Date regex failed",
+            date_text
+        )
+
         return False
 
     month, day_s, year_s = m.groups()
@@ -153,14 +316,28 @@ def matches_target_date(date_text):
 
     except Exception:
 
+        log.exception("Date parsing failed")
+
         return False
 
-    return (
+    result = (
 
         month == TARGET_MONTH
         and day == TARGET_DAY
         and year == TARGET_YEAR
     )
+
+    trace(
+        "Date comparison result",
+        {
+            "month": month,
+            "day": day,
+            "year": year,
+            "matched": result
+        }
+    )
+
+    return result
 
 
 # ---------------------------------------------------------
@@ -169,35 +346,54 @@ def matches_target_date(date_text):
 
 def login(page):
 
-    log.info("Opening login page")
+    trace("Opening login page")
 
     page.goto(
         LOGIN_URL,
         wait_until="networkidle"
     )
 
+    dump_html(page, "login_page")
+
+    screenshot(page, "login_page")
+
+    trace("Filling email field")
+
     page.fill(
         'input[type="email"]',
         USERNAME
     )
+
+    trace("Filling password field")
 
     page.fill(
         'input[type="password"]',
         PASSWORD
     )
 
+    trace("Clicking submit button")
+
     page.click(
         'button[type="submit"]'
     )
+
+    trace("Waiting for dashboard redirect")
 
     page.wait_for_url(
         f"{BASE_URL}/main/**",
         timeout=30000
     )
 
-    log.info(
-        f"Login success -> {page.url}"
+    trace(
+        "Login successful",
+        {
+            "url": page.url
+        }
     )
+
+    dump_html(page, "after_login")
+
+    screenshot(page, "after_login")
 
 
 # ---------------------------------------------------------
@@ -205,6 +401,40 @@ def login(page):
 # ---------------------------------------------------------
 
 def get_auth_session(page):
+
+    trace("Dumping browser storage")
+
+    storage_data = page.evaluate("""
+    () => {
+
+        const ls = {}
+        const ss = {}
+
+        for (let i = 0; i < localStorage.length; i++) {
+
+            const k = localStorage.key(i)
+
+            ls[k] = localStorage.getItem(k)
+        }
+
+        for (let i = 0; i < sessionStorage.length; i++) {
+
+            const k = sessionStorage.key(i)
+
+            ss[k] = sessionStorage.getItem(k)
+        }
+
+        return {
+            localStorage: ls,
+            sessionStorage: ss
+        }
+    }
+    """)
+
+    trace(
+        "Storage dump",
+        storage_data
+    )
 
     token = page.evaluate("""
     () => {
@@ -217,8 +447,12 @@ def get_auth_session(page):
     }
     """)
 
-    log.info(
-        f"Token found: {bool(token)}"
+    trace(
+        "Token extracted",
+        {
+            "exists": bool(token),
+            "preview": token[:120]
+        }
     )
 
     session = requests.Session()
@@ -229,14 +463,12 @@ def get_auth_session(page):
 
         "Authorization": f"Bearer {token}",
 
-        "Origin": "https://merchant.postex.pk",
+        "Origin": BASE_URL,
 
-        "Referer": "https://merchant.postex.pk/",
+        "Referer": BASE_URL + "/",
 
         "User-Agent": (
-            "Mozilla/5.0 "
-            "AppleWebKit/537.36 "
-            "(KHTML, like Gecko)"
+            "Mozilla/5.0 AppleWebKit/537.36"
         )
     })
 
@@ -244,45 +476,119 @@ def get_auth_session(page):
 
     for c in cookies:
 
+        trace(
+            "Cookie copied",
+            c
+        )
+
         session.cookies.set(
             c["name"],
             c["value"]
         )
 
-    log.info(
-        f"Copied {len(cookies)} cookies"
-    )
-
     return session
 
 
 # ---------------------------------------------------------
-# Capture Network Requests
+# Request Interceptor
+# ---------------------------------------------------------
+
+def route_intercept(route, request):
+
+    trace(
+        "INTERCEPTED REQUEST",
+        {
+            "url": request.url,
+            "method": request.method,
+            "resource_type": request.resource_type,
+            "headers": request.headers,
+            "post_data": request.post_data
+        }
+    )
+
+    route.continue_()
+
+
+# ---------------------------------------------------------
+# Capture Requests While Clicking
 # ---------------------------------------------------------
 
 def capture_requests_while_click(
 
     page,
-
     element,
-
-    timeout=6
+    timeout=10,
+    click_label="unknown_click"
 ):
 
+    trace(
+        "CLICK CAPTURE SESSION STARTED",
+        {
+            "label": click_label,
+            "timeout": timeout
+        }
+    )
+
     captured = {
+
+        "click_label": click_label,
+
+        "clicked_element": {},
 
         "requests": [],
 
         "responses": [],
 
-        "matching_urls": []
+        "matching_urls": [],
+
+        "api_replays": []
     }
+
+    # -------------------------------------------------
+    # Element details
+    # -------------------------------------------------
+
+    try:
+
+        element_html = element.evaluate(
+            "(el) => el.outerHTML"
+        )
+
+        element_text = element.inner_text()
+
+        bbox = element.bounding_box()
+
+        captured["clicked_element"] = {
+
+            "html": element_html,
+
+            "text": element_text,
+
+            "bounding_box": bbox
+        }
+
+        trace(
+            "CLICK TARGET DETAILS",
+            captured["clicked_element"]
+        )
+
+    except Exception:
+
+        log.exception(
+            "Failed extracting click target info"
+        )
+
+    # -------------------------------------------------
+    # Request handler
+    # -------------------------------------------------
 
     def on_request(request):
 
         try:
 
-            req = {
+            req_data = {
+
+                "timestamp": time.time(),
 
                 "url": request.url,
 
@@ -290,26 +596,52 @@ def capture_requests_while_click(
 
                 "resource_type": request.resource_type,
 
-                "headers": dict(request.headers)
+                "headers": dict(request.headers),
+
+                "post_data": request.post_data
             }
 
-            captured["requests"].append(req)
+            captured["requests"].append(req_data)
 
-            log.info(
-                f"REQUEST -> {request.url}"
+            trace(
+                "REQUEST TRIGGERED BY CLICK",
+                req_data
             )
 
-            if "load-sheet" in request.url:
+            if request.resource_type in ["xhr", "fetch"]:
+
+                trace(
+                    "XHR/FETCH DETECTED",
+                    {
+                        "url": request.url,
+                        "method": request.method
+                    }
+                )
+
+            if (
+                "load-sheet" in request.url
+                or "/order" in request.url
+                or "api.postex.pk" in request.url
+            ):
 
                 captured["matching_urls"].append(
                     request.url
                 )
 
-        except Exception as e:
+                trace(
+                    "MATCHING API URL DETECTED",
+                    request.url
+                )
 
-            log.error(
-                f"Request capture error: {e}"
+        except Exception:
+
+            log.exception(
+                "Request logging failed"
             )
+
+    # -------------------------------------------------
+    # Response handler
+    # -------------------------------------------------
 
     def on_response(response):
 
@@ -322,7 +654,9 @@ def capture_requests_while_click(
             except Exception:
                 pass
 
-            res = {
+            res_data = {
+
+                "timestamp": time.time(),
 
                 "url": response.url,
 
@@ -330,50 +664,98 @@ def capture_requests_while_click(
 
                 "headers": dict(response.headers),
 
-                "body_preview": body[:3000]
+                "body_preview": body[:10000]
             }
 
-            captured["responses"].append(res)
-
-            log.info(
-                f"RESPONSE -> "
-                f"{response.status} "
-                f"{response.url}"
+            captured["responses"].append(
+                res_data
             )
 
-        except Exception as e:
-
-            log.error(
-                f"Response capture error: {e}"
+            trace(
+                "RESPONSE TRIGGERED BY CLICK",
+                {
+                    "url": response.url,
+                    "status": response.status,
+                    "preview": body[:1000]
+                }
             )
 
-    page.on(
-        "request",
-        on_request
-    )
+            safe_name = re.sub(
+                r"[^a-zA-Z0-9]",
+                "_",
+                response.url
+            )[:180]
 
-    page.on(
-        "response",
-        on_response
-    )
+            raw_path = (
+                DEBUG_DIR
+                / f"response_{safe_name}.txt"
+            )
+
+            raw_path.write_text(
+                body,
+                encoding="utf-8"
+            )
+
+        except Exception:
+
+            log.exception(
+                "Response logging failed"
+            )
+
+    # -------------------------------------------------
+    # Attach listeners
+    # -------------------------------------------------
+
+    page.on("request", on_request)
+
+    page.on("response", on_response)
+
+    # -------------------------------------------------
+    # Perform click
+    # -------------------------------------------------
 
     try:
 
-        if hasattr(element, "click"):
-
-            element.click()
-
-        else:
-
-            page.click(element)
-
-    except Exception as e:
-
-        log.error(
-            f"Click failed: {e}"
+        trace(
+            "PERFORMING CLICK"
         )
 
+        click_start = time.time()
+
+        element.click()
+
+        click_end = time.time()
+
+        trace(
+            "CLICK COMPLETED",
+            {
+                "duration_seconds":
+                    click_end - click_start
+            }
+        )
+
+    except Exception:
+
+        log.exception(
+            "Element click failed"
+        )
+
+    # -------------------------------------------------
+    # Wait for network
+    # -------------------------------------------------
+
+    trace(
+        "WAITING FOR NETWORK EVENTS",
+        {
+            "seconds": timeout
+        }
+    )
+
     time.sleep(timeout)
+
+    # -------------------------------------------------
+    # Cleanup listeners
+    # -------------------------------------------------
 
     try:
 
@@ -388,7 +770,106 @@ def capture_requests_while_click(
         )
 
     except Exception:
-        pass
+
+        log.exception(
+            "Listener cleanup failed"
+        )
+
+    # -------------------------------------------------
+    # Replay URLs directly
+    # -------------------------------------------------
+
+    try:
+
+        trace(
+            "STARTING DIRECT API REPLAY"
+        )
+
+        for url in captured["matching_urls"]:
+
+            try:
+
+                trace(
+                    "REPLAYING URL",
+                    url
+                )
+
+                replay_response = requests.get(
+                    url,
+                    timeout=30
+                )
+
+                replay_data = {
+
+                    "url": url,
+
+                    "status_code":
+                        replay_response.status_code,
+
+                    "headers":
+                        dict(replay_response.headers),
+
+                    "body_preview":
+                        replay_response.text[:10000]
+                }
+
+                captured["api_replays"].append(
+                    replay_data
+                )
+
+                trace(
+                    "DIRECT API REPLAY RESPONSE",
+                    {
+                        "url": url,
+                        "status":
+                            replay_response.status_code
+                    }
+                )
+
+                safe_name = re.sub(
+                    r"[^a-zA-Z0-9]",
+                    "_",
+                    url
+                )[:180]
+
+                replay_path = (
+                    DEBUG_DIR
+                    / f"replay_{safe_name}.txt"
+                )
+
+                replay_path.write_text(
+                    replay_response.text,
+                    encoding="utf-8"
+                )
+
+            except Exception:
+
+                log.exception(
+                    "Replay request failed"
+                )
+
+    except Exception:
+
+        log.exception(
+            "Replay phase failed"
+        )
+
+    trace(
+        "CLICK CAPTURE SESSION FINISHED",
+        {
+            "requests_captured":
+                len(captured["requests"]),
+
+            "responses_captured":
+                len(captured["responses"]),
+
+            "matching_urls":
+                len(captured["matching_urls"]),
+
+            "replays":
+                len(captured["api_replays"])
+        }
+    )
 
     return captured
 
@@ -398,6 +879,8 @@ def capture_requests_while_click(
 # ---------------------------------------------------------
 
 def find_rows_dom(page):
+
+    trace("Finding loadsheet rows")
 
     results = []
 
@@ -410,47 +893,97 @@ def find_rows_dom(page):
         "tbody tr"
     ]
 
+    trace(
+        "Total TR count",
+        page.locator("tr").count()
+    )
+
     rows = []
 
     for sel in selectors:
 
         try:
 
+            trace(
+                f"Trying selector: {sel}"
+            )
+
             rows = page.query_selector_all(sel)
 
+            trace(
+                "Selector result",
+                {
+                    "selector": sel,
+                    "count": len(rows)
+                }
+            )
+
             if rows:
-
-                log.info(
-                    f"Using selector: {sel}"
-                )
-
                 break
 
         except Exception:
-            pass
 
-    log.info(
-        f"Rows found: {len(rows)}"
-    )
+            log.exception(
+                "Selector failed"
+            )
+
+    if not rows:
+
+        raise Exception("NO ROWS FOUND")
 
     for idx, row in enumerate(rows):
 
         try:
 
+            trace(
+                f"Inspecting row {idx}"
+            )
+
+            raw_html = row.inner_html()
+
+            trace(
+                f"RAW HTML ROW {idx}",
+                raw_html
+            )
+
+            row_file = DEBUG_DIR / f"row_{idx}.html"
+
+            row_file.write_text(
+                raw_html,
+                encoding="utf-8"
+            )
+
             cells = row.query_selector_all("td")
+
+            trace(
+                f"Cells found in row {idx}",
+                len(cells)
+            )
 
             if len(cells) < 7:
                 continue
 
             values = []
 
-            for cell in cells:
+            for cidx, cell in enumerate(cells):
 
                 try:
-                    values.append(
-                        cell.inner_text().strip()
+
+                    val = cell.inner_text().strip()
+
+                    trace(
+                        f"Cell [{idx}:{cidx}]",
+                        val
                     )
+
+                    values.append(val)
+
                 except Exception:
+
+                    log.exception(
+                        "Cell extraction failed"
+                    )
+
                     values.append("")
 
             loadsheet_number = values[0]
@@ -461,16 +994,21 @@ def find_rows_dom(page):
 
             status = values[6]
 
-            if not matches_target_date(
-                date_text
-            ):
-                continue
+            if not matches_target_date(date_text):
 
-            outer = row.inner_html()
+                trace(
+                    "Date mismatch",
+                    {
+                        "incoming": date_text,
+                        "target": TARGET_LABEL
+                    }
+                )
+
+                continue
 
             m = re.search(
                 r"more-menu-(\d+)",
-                outer
+                raw_html
             )
 
             sheet_id = (
@@ -493,28 +1031,37 @@ def find_rows_dom(page):
                 "total_orders": total_orders
             }
 
-            log.info(
-                f"Matched row -> "
-                f"{result}"
+            trace(
+                "MATCHED ROW",
+                result
             )
 
-            # Try clicking order count
             try:
 
                 clickable = row.query_selector(
                     "span.orders"
                 )
 
+                trace(
+                    "Clickable orders element exists",
+                    bool(clickable)
+                )
+
                 if clickable:
 
                     network = capture_requests_while_click(
+
                         page,
-                        clickable
+
+                        clickable,
+
+                        timeout=10,
+
+                        click_label=f"row_{idx}_orders_click"
                     )
 
                     result["network_capture"] = network
 
-                    # Search for ID from URLs
                     for url in network["matching_urls"]:
 
                         mm = re.search(
@@ -528,18 +1075,25 @@ def find_rows_dom(page):
                                 mm.group(1)
                             )
 
+                            trace(
+                                "Captured sheet id",
+                                mm.group(1)
+                            )
+
                             break
 
-            except Exception as e:
+            except Exception:
 
-                result["network_error"] = str(e)
+                log.exception(
+                    "Click capture failed"
+                )
 
             results.append(result)
 
-        except Exception as e:
+        except Exception:
 
-            log.error(
-                f"Row parse failed: {e}"
+            log.exception(
+                "Row processing failed"
             )
 
     return results
@@ -552,9 +1106,7 @@ def find_rows_dom(page):
 def fetch_orders(
 
     session,
-
     sheet_id,
-
     status="booked"
 ):
 
@@ -571,26 +1123,13 @@ def fetch_orders(
         "direction": "desc"
     }
 
-    final_url = (
-
-        f"{url}"
-        f"?loadSheetId={sheet_id}"
-        f"&orderStatusOption={status}"
-        f"&direction=desc"
+    trace(
+        "API REQUEST",
+        {
+            "url": url,
+            "params": params
+        }
     )
-
-    log.info(
-        f"API URL -> {final_url}"
-    )
-
-    debug = {
-
-        "sheet_id": sheet_id,
-
-        "status": status,
-
-        "url": final_url
-    }
 
     try:
 
@@ -600,28 +1139,21 @@ def fetch_orders(
             timeout=30
         )
 
-        debug["status_code"] = (
-            response.status_code
-        )
-
-        debug["response_text"] = (
-            response.text[:10000]
-        )
-
-        log.info(
-            f"HTTP {response.status_code}"
+        trace(
+            "API RESPONSE",
+            {
+                "status": response.status_code,
+                "preview": response.text[:2000]
+            }
         )
 
         raw_file = (
-
             DEBUG_DIR
             / f"api_{sheet_id}_{status}.txt"
         )
 
         raw_file.write_text(
-
             response.text,
-
             encoding="utf-8"
         )
 
@@ -629,35 +1161,38 @@ def fetch_orders(
 
             data = response.json()
 
-            debug["json"] = data
+            trace(
+                "API JSON",
+                data
+            )
 
-        except Exception as e:
+        except Exception:
 
-            debug["json_error"] = str(e)
+            log.exception(
+                "JSON parsing failed"
+            )
 
-            return {
-
-                "debug": debug,
-
-                "orders": []
-            }
+            data = []
 
         return {
 
-            "debug": debug,
+            "orders": data,
 
-            "orders": data
+            "status_code":
+                response.status_code
         }
 
-    except Exception as e:
+    except Exception:
 
-        debug["error"] = str(e)
+        log.exception(
+            "API request failed"
+        )
 
         return {
 
-            "debug": debug,
+            "orders": [],
 
-            "orders": []
+            "status_code": None
         }
 
 
@@ -667,18 +1202,20 @@ def fetch_orders(
 
 def main():
 
+    trace("SCRAPER STARTED")
+
     final = {
 
         "scrape_date": DATE_TAG,
 
         "target_date": TARGET_LABEL,
 
-        "loadsheets": [],
-
-        "debug": {}
+        "loadsheets": []
     }
 
     with sync_playwright() as pw:
+
+        trace("Launching browser")
 
         browser = pw.chromium.launch(
 
@@ -690,13 +1227,88 @@ def main():
             ]
         )
 
-        context = browser.new_context()
+        trace("Creating browser context")
+
+        context = browser.new_context(
+
+            record_har_path=str(
+                DEBUG_DIR / "network.har"
+            )
+        )
+
+        trace("Starting tracing")
+
+        context.tracing.start(
+
+            screenshots=True,
+
+            snapshots=True,
+
+            sources=True
+        )
 
         page = context.new_page()
 
-        login(page)
+        page.route(
+            "**/*",
+            route_intercept
+        )
+
+        # -------------------------------------------------
+        # Browser event logs
+        # -------------------------------------------------
+
+        page.on(
+            "console",
+            lambda msg: trace(
+                f"BROWSER CONSOLE [{msg.type}]",
+                msg.text
+            )
+        )
+
+        page.on(
+            "pageerror",
+            lambda exc: trace(
+                "PAGE ERROR",
+                str(exc)
+            )
+        )
+
+        page.on(
+            "framenavigated",
+            lambda frame: trace(
+                "FRAME NAVIGATED",
+                {
+                    "url": frame.url
+                }
+            )
+        )
+
+        page.on(
+            "requestfailed",
+            lambda req: trace(
+                "REQUEST FAILED",
+                {
+                    "url": req.url,
+                    "method": req.method,
+                    "failure": str(req.failure)
+                }
+            )
+        )
+
+        end_login = timed("LOGIN")
+
+        retry(
+            lambda: login(page)
+        )
+
+        end_login()
 
         session = get_auth_session(page)
+
+        trace(
+            "Opening loadsheet page"
+        )
 
         page.goto(
             LOADSHEET_URL,
@@ -705,49 +1317,68 @@ def main():
 
         time.sleep(10)
 
-        html = page.content()
+        dump_html(page, "loadsheet_page")
 
-        debug_html = (
-            DEBUG_DIR
-            / "page.html"
+        screenshot(page, "loadsheet_page")
+
+        rows = retry(
+            lambda: find_rows_dom(page)
         )
-
-        debug_html.write_text(
-
-            html,
-
-            encoding="utf-8"
-        )
-
-        rows = find_rows_dom(page)
-
-        final["debug"]["rows_found"] = rows
 
         for row in rows:
 
-            sid = (
+            try:
 
-                row.get("captured_sheet_id")
-                or row.get("sheet_id")
+                sid = (
+
+                    row.get("captured_sheet_id")
+                    or row.get("sheet_id")
+                )
+
+                row["final_sheet_id"] = sid
+
+                trace(
+                    "Processing loadsheet",
+                    {
+                        "sheet_id": sid
+                    }
+                )
+
+                if not sid:
+
+                    trace(
+                        "Skipping row due to missing sheet id"
+                    )
+
+                    continue
+
+                booked = fetch_orders(
+
+                    session,
+
+                    sid,
+
+                    "booked"
+                )
+
+                row["api_result"] = booked
+
+                final["loadsheets"].append(row)
+
+            except Exception:
+
+                log.exception(
+                    "Loadsheet processing failed"
+                )
+
+        trace("Stopping Playwright tracing")
+
+        context.tracing.stop(
+
+            path=str(
+                DEBUG_DIR / "trace.zip"
             )
-
-            row["final_sheet_id"] = sid
-
-            if not sid:
-                continue
-
-            booked = fetch_orders(
-
-                session,
-
-                sid,
-
-                "booked"
-            )
-
-            row["api_result"] = booked
-
-            final["loadsheets"].append(row)
+        )
 
         browser.close()
 
@@ -756,10 +1387,20 @@ def main():
         final
     )
 
-    log.info(
-        f"Finished -> {OUTPUT_FILE}"
+    trace(
+        "FINAL SUMMARY",
+        {
+            "rows_processed": len(rows),
+            "loadsheets_saved":
+                len(final["loadsheets"]),
+            "output_file":
+                str(OUTPUT_FILE)
+        }
     )
+
+    trace("SCRAPER FINISHED")
 
 
 if __name__ == "__main__":
+
     main()
