@@ -1,4 +1,3 @@
-
 """
 PostEx Loadsheet Scraper
 ========================
@@ -55,6 +54,10 @@ N8N_WEBHOOK = os.environ.get("N8N_WEBHOOK_URL", "")
 OUTPUT_DIR = Path("data")
 
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+DEBUG_DIR = OUTPUT_DIR / "debug"
+
+DEBUG_DIR.mkdir(exist_ok=True)
 
 
 # ───────────────────────────────────────────────────────────────
@@ -136,6 +139,11 @@ def get_auth_session(page):
             "JWT token not found after login"
         )
 
+    log.info(
+        f"JWT token found "
+        f"(length={len(token)})"
+    )
+
     session = requests.Session()
 
     session.headers.update({
@@ -159,14 +167,19 @@ def get_auth_session(page):
 
     # Copy browser cookies
 
-    for c in page.context.cookies():
+    cookies = page.context.cookies()
+
+    for c in cookies:
 
         session.cookies.set(
             c["name"],
             c["value"]
         )
 
-    log.info("Authenticated API session created")
+    log.info(
+        f"Authenticated API session created "
+        f"with {len(cookies)} cookies"
+    )
 
     return session
 
@@ -174,7 +187,6 @@ def get_auth_session(page):
 # ───────────────────────────────────────────────────────────────
 # Loadsheet Fetching
 # ───────────────────────────────────────────────────────────────
-
 
 def scrape_loadsheet_ids(page):
 
@@ -279,8 +291,6 @@ def scrape_loadsheet_ids(page):
 
             def capture_request(request):
 
-                import re
-
                 match = re.search(
                     r"/load-sheet/(\d+)/order",
                     request.url
@@ -362,6 +372,97 @@ def scrape_loadsheet_ids(page):
 
 
 # ───────────────────────────────────────────────────────────────
+# Debug Helpers
+# ───────────────────────────────────────────────────────────────
+
+def save_debug_response(
+    sheet_id,
+    status,
+    response,
+    parsed_json=None
+):
+
+    try:
+
+        timestamp = datetime.now().strftime(
+            "%Y%m%d_%H%M%S"
+        )
+
+        base_name = (
+            f"{sheet_id}_{status}_{timestamp}"
+        )
+
+        # Raw text response
+        raw_file = (
+            DEBUG_DIR
+            / f"{base_name}_raw.txt"
+        )
+
+        raw_file.write_text(
+            response.text,
+            encoding="utf-8"
+        )
+
+        # Parsed JSON response
+        if parsed_json is not None:
+
+            json_file = (
+                DEBUG_DIR
+                / f"{base_name}.json"
+            )
+
+            json_file.write_text(
+                json.dumps(
+                    parsed_json,
+                    indent=2,
+                    ensure_ascii=False
+                ),
+                encoding="utf-8"
+            )
+
+        # Request info
+        meta_file = (
+            DEBUG_DIR
+            / f"{base_name}_meta.json"
+        )
+
+        meta = {
+
+            "url": response.url,
+
+            "status_code": response.status_code,
+
+            "headers": dict(response.headers),
+
+            "request_headers": dict(response.request.headers),
+
+            "sheet_id": sheet_id,
+
+            "status": status
+        }
+
+        meta_file.write_text(
+            json.dumps(
+                meta,
+                indent=2,
+                ensure_ascii=False
+            ),
+            encoding="utf-8"
+        )
+
+        log.info(
+            f"Debug response saved -> "
+            f"{json_file if parsed_json else raw_file}"
+        )
+
+    except Exception as e:
+
+        log.error(
+            f"Failed saving debug response: {e}"
+        )
+
+
+# ───────────────────────────────────────────────────────────────
 # Orders Fetching
 # ───────────────────────────────────────────────────────────────
 
@@ -386,6 +487,14 @@ def fetch_orders(
 
     try:
 
+        log.info(
+            f"Calling API: {url}"
+        )
+
+        log.info(
+            f"Params: {params}"
+        )
+
         response = session.get(
             url,
             params=params,
@@ -398,11 +507,51 @@ def fetch_orders(
             f"-> HTTP {response.status_code}"
         )
 
+        log.info(
+            f"Final URL: {response.url}"
+        )
+
+        log.info(
+            f"Response preview: "
+            f"{response.text[:500]}"
+        )
+
         response.raise_for_status()
 
-        data = response.json()
+        # Try parsing JSON
+        try:
 
-        # Debug
+            data = response.json()
+
+        except Exception as json_error:
+
+            log.error(
+                f"JSON parsing failed: "
+                f"{json_error}"
+            )
+
+            save_debug_response(
+                sheet_id,
+                status,
+                response
+            )
+
+            return []
+
+        # Save FULL raw API response
+        save_debug_response(
+            sheet_id,
+            status,
+            response,
+            data
+        )
+
+        log.info(
+            f"Response type: "
+            f"{type(data)}"
+        )
+
+        # Debug dict keys
         if isinstance(data, dict):
 
             log.info(
@@ -410,16 +559,89 @@ def fetch_orders(
                 f"{list(data.keys())}"
             )
 
+            # Extra debugging
+            for key in data.keys():
+
+                value = data[key]
+
+                if isinstance(value, list):
+
+                    log.info(
+                        f"Key '{key}' "
+                        f"contains list "
+                        f"with {len(value)} items"
+                    )
+
+        # If direct array
         if isinstance(data, list):
+
+            log.info(
+                f"Direct list response "
+                f"with {len(data)} items"
+            )
+
             return data
 
-        return (
-            data.get("data")
-            or data.get("result")
-            or data.get("orders")
-            or data.get("rows")
-            or []
+        # Try common response keys
+        possible_keys = [
+            "data",
+            "result",
+            "orders",
+            "rows",
+            "payload",
+            "items"
+        ]
+
+        for key in possible_keys:
+
+            if key in data:
+
+                value = data[key]
+
+                if isinstance(value, list):
+
+                    log.info(
+                        f"Using key '{key}' "
+                        f"with {len(value)} items"
+                    )
+
+                    return value
+
+                elif isinstance(value, dict):
+
+                    log.info(
+                        f"Key '{key}' "
+                        f"is dict"
+                    )
+
+                    # Sometimes nested
+                    for nested_key in possible_keys:
+
+                        nested_value = value.get(
+                            nested_key
+                        )
+
+                        if isinstance(
+                            nested_value,
+                            list
+                        ):
+
+                            log.info(
+                                f"Using nested key "
+                                f"'{nested_key}' "
+                                f"with "
+                                f"{len(nested_value)} items"
+                            )
+
+                            return nested_value
+
+        log.warning(
+            f"No orders array found "
+            f"for sheet {sheet_id} "
+            f"status {status}"
         )
+
+        return []
 
     except Exception as e:
 
