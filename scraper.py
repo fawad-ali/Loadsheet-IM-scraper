@@ -1,11 +1,15 @@
 """
 PostEx Loadsheet Scraper
 ========================
-Logs into merchant.postex.pk, captures real loadsheet IDs
-from API responses, fetches all orders from PostEx APIs,
-and saves the data into JSON.
+DEBUG VERSION
 
-Author: Updated API-based stable version
+This version:
+1. Saves EVERY API URL being called
+2. Saves EVERY API response
+3. Saves browser-captured request URLs
+4. Saves page HTML
+5. Saves loadsheet row data
+6. Helps identify where scraping fails
 """
 
 import os
@@ -49,15 +53,49 @@ USERNAME = os.environ["POSTEX_USERNAME"]
 
 PASSWORD = os.environ["POSTEX_PASSWORD"]
 
-N8N_WEBHOOK = os.environ.get("N8N_WEBHOOK_URL", "")
-
 OUTPUT_DIR = Path("data")
 
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-DEBUG_DIR = OUTPUT_DIR / "debug"
+DEBUG_FILE = OUTPUT_DIR / "debug_output.json"
 
-DEBUG_DIR.mkdir(exist_ok=True)
+
+# ───────────────────────────────────────────────────────────────
+# Debug Storage
+# ───────────────────────────────────────────────────────────────
+
+DEBUG_DATA = {
+
+    "login": {},
+
+    "loadsheet_page": {},
+
+    "captured_requests": [],
+
+    "table_rows": [],
+
+    "matched_rows": [],
+
+    "api_calls": [],
+
+    "errors": []
+}
+
+
+def save_debug():
+
+    DEBUG_FILE.write_text(
+        json.dumps(
+            DEBUG_DATA,
+            indent=2,
+            ensure_ascii=False
+        ),
+        encoding="utf-8"
+    )
+
+    log.info(
+        f"Debug data saved -> {DEBUG_FILE}"
+    )
 
 
 # ───────────────────────────────────────────────────────────────
@@ -105,14 +143,23 @@ def login(page):
         PASSWORD
     )
 
-    log.info("Submitting login form...")
-
     page.click('button[type="submit"]')
 
     page.wait_for_url(
         f"{BASE_URL}/main/**",
         timeout=30000
     )
+
+    current_url = page.url
+
+    DEBUG_DATA["login"] = {
+
+        "success": True,
+
+        "current_url": current_url
+    }
+
+    save_debug()
 
     log.info("Login successful")
 
@@ -133,16 +180,17 @@ def get_auth_session(page):
     }
     """)
 
+    DEBUG_DATA["login"]["token_found"] = bool(token)
+
+    DEBUG_DATA["login"]["token_length"] = len(token)
+
+    save_debug()
+
     if not token:
 
         raise Exception(
             "JWT token not found after login"
         )
-
-    log.info(
-        f"JWT token found "
-        f"(length={len(token)})"
-    )
 
     session = requests.Session()
 
@@ -165,21 +213,12 @@ def get_auth_session(page):
         )
     })
 
-    # Copy browser cookies
-
-    cookies = page.context.cookies()
-
-    for c in cookies:
+    for c in page.context.cookies():
 
         session.cookies.set(
             c["name"],
             c["value"]
         )
-
-    log.info(
-        f"Authenticated API session created "
-        f"with {len(cookies)} cookies"
-    )
 
     return session
 
@@ -191,58 +230,65 @@ def get_auth_session(page):
 def scrape_loadsheet_ids(page):
 
     log.info(
-        f"Opening loadsheet page for "
-        f"{TARGET_LABEL}"
+        f"Opening loadsheet page "
+        f"for {TARGET_LABEL}"
     )
 
     page.goto(
         LOADSHEET_URL,
-        wait_until="domcontentloaded",
+        wait_until="networkidle",
         timeout=60000
     )
 
-    # Give Angular time to render
-    time.sleep(10)
+    time.sleep(15)
 
-    # Sometimes PostEx loads inside Angular components
-    # so we wait for ANY table row manually
-    rows = []
+    DEBUG_DATA["loadsheet_page"] = {
 
-    for i in range(30):
+        "url": page.url,
 
-        rows = page.query_selector_all("tr.data-item")
+        "title": page.title()
+    }
 
-        if rows:
-            break
+    # Save full HTML
+    html = page.content()
 
-        log.info(
-            f"Waiting for loadsheet rows... "
-            f"{i+1}/30"
-        )
+    html_file = OUTPUT_DIR / "debug_page.html"
 
-        time.sleep(2)
+    html_file.write_text(
+        html,
+        encoding="utf-8"
+    )
 
-    if not rows:
+    DEBUG_DATA["loadsheet_page"]["html_saved"] = str(html_file)
 
-        log.error(
-            "No loadsheet rows found!"
-        )
+    save_debug()
 
-        # Save page HTML for debugging
-        html = page.content()
+    # Capture ALL requests
+    def capture_all_requests(request):
 
-        with open(
-            "debug_page.html",
-            "w",
-            encoding="utf-8"
-        ) as f:
-            f.write(html)
+        req = {
 
-        return []
+            "url": request.url,
+
+            "method": request.method,
+
+            "resource_type": request.resource_type
+        }
+
+        DEBUG_DATA["captured_requests"].append(req)
+
+    page.on(
+        "request",
+        capture_all_requests
+    )
+
+    rows = page.query_selector_all("tr")
 
     log.info(
-        f"Found {len(rows)} table rows"
+        f"Total TR rows found: {len(rows)}"
     )
+
+    DEBUG_DATA["loadsheet_page"]["total_rows"] = len(rows)
 
     results = []
 
@@ -252,214 +298,123 @@ def scrape_loadsheet_ids(page):
 
             cells = row.query_selector_all("td")
 
+            row_data = []
+
+            for cell in cells:
+
+                text = cell.inner_text().strip()
+
+                row_data.append(text)
+
+            DEBUG_DATA["table_rows"].append({
+
+                "index": idx,
+
+                "cells": row_data
+            })
+
+            save_debug()
+
             if len(cells) < 7:
                 continue
 
-            date_text = (
-                cells[5]
-                .inner_text()
-                .strip()
-            )
+            date_text = row_data[5]
 
             if TARGET_LABEL not in date_text:
                 continue
 
-            loadsheet_number = (
-                cells[0]
-                .inner_text()
-                .strip()
-            )
+            loadsheet_number = row_data[0]
 
-            total_orders = (
-                cells[1]
-                .inner_text()
-                .strip()
-            )
+            total_orders = row_data[1]
 
-            status = (
-                cells[6]
-                .inner_text()
-                .strip()
-            )
+            status = row_data[6]
 
             log.info(
-                f"Matched row: "
+                f"Matched loadsheet row: "
                 f"{loadsheet_number}"
             )
 
-            captured_sheet_id = []
+            DEBUG_DATA["matched_rows"].append({
 
-            def capture_request(request):
+                "loadsheet_number": loadsheet_number,
 
-                match = re.search(
-                    r"/load-sheet/(\d+)/order",
-                    request.url
-                )
+                "date": date_text,
 
-                if match:
+                "status": status,
 
-                    sid = match.group(1)
+                "total_orders": total_orders
+            })
 
-                    captured_sheet_id.append(sid)
+            save_debug()
 
-                    log.info(
-                        f"Captured ID: {sid}"
-                    )
-
-            page.on(
-                "request",
-                capture_request
-            )
-
+            # Try clicking row buttons
             menu_btn = row.query_selector(
                 "a.toggle-tigger"
             )
 
             if menu_btn:
+
                 menu_btn.click()
-                time.sleep(1)
+
+                time.sleep(2)
 
             print_btn = row.query_selector(
                 'a[data-target="#r2pPrint"]'
             )
 
             if print_btn:
+
                 print_btn.click()
+
                 time.sleep(5)
 
-            page.remove_listener(
-                "request",
-                capture_request
-            )
+            # Search captured URLs for loadsheet ID
+            found_sheet_id = None
 
-            if not captured_sheet_id:
+            for req in DEBUG_DATA["captured_requests"]:
 
-                log.warning(
-                    f"No ID captured for "
-                    f"{loadsheet_number}"
+                match = re.search(
+                    r"/load-sheet/(\d+)/order",
+                    req["url"]
                 )
 
-                continue
+                if match:
 
-            sheet_id = captured_sheet_id[0]
+                    found_sheet_id = match.group(1)
+
+                    req["captured_sheet_id"] = found_sheet_id
+
+                    break
 
             results.append({
 
                 "loadsheet_number": loadsheet_number,
-                "loadsheet_id": sheet_id,
-                "total_orders": int(total_orders),
-                "date": date_text,
-                "status": status
 
+                "loadsheet_id": found_sheet_id,
+
+                "total_orders": total_orders,
+
+                "date": date_text,
+
+                "status": status
             })
 
-            page.keyboard.press("Escape")
-
-            time.sleep(1)
+            save_debug()
 
         except Exception as e:
 
-            log.error(
-                f"Failed row {idx}: {e}"
-            )
+            DEBUG_DATA["errors"].append({
 
-    log.info(
-        f"Matched loadsheets: "
-        f"{len(results)}"
-    )
+                "stage": "scrape_loadsheet_ids",
+
+                "row": idx,
+
+                "error": str(e)
+            })
+
+            save_debug()
 
     return results
-
-
-# ───────────────────────────────────────────────────────────────
-# Debug Helpers
-# ───────────────────────────────────────────────────────────────
-
-def save_debug_response(
-    sheet_id,
-    status,
-    response,
-    parsed_json=None
-):
-
-    try:
-
-        timestamp = datetime.now().strftime(
-            "%Y%m%d_%H%M%S"
-        )
-
-        base_name = (
-            f"{sheet_id}_{status}_{timestamp}"
-        )
-
-        # Raw text response
-        raw_file = (
-            DEBUG_DIR
-            / f"{base_name}_raw.txt"
-        )
-
-        raw_file.write_text(
-            response.text,
-            encoding="utf-8"
-        )
-
-        # Parsed JSON response
-        if parsed_json is not None:
-
-            json_file = (
-                DEBUG_DIR
-                / f"{base_name}.json"
-            )
-
-            json_file.write_text(
-                json.dumps(
-                    parsed_json,
-                    indent=2,
-                    ensure_ascii=False
-                ),
-                encoding="utf-8"
-            )
-
-        # Request info
-        meta_file = (
-            DEBUG_DIR
-            / f"{base_name}_meta.json"
-        )
-
-        meta = {
-
-            "url": response.url,
-
-            "status_code": response.status_code,
-
-            "headers": dict(response.headers),
-
-            "request_headers": dict(response.request.headers),
-
-            "sheet_id": sheet_id,
-
-            "status": status
-        }
-
-        meta_file.write_text(
-            json.dumps(
-                meta,
-                indent=2,
-                ensure_ascii=False
-            ),
-            encoding="utf-8"
-        )
-
-        log.info(
-            f"Debug response saved -> "
-            f"{json_file if parsed_json else raw_file}"
-        )
-
-    except Exception as e:
-
-        log.error(
-            f"Failed saving debug response: {e}"
-        )
 
 
 # ───────────────────────────────────────────────────────────────
@@ -485,15 +440,27 @@ def fetch_orders(
         "direction": "desc"
     }
 
+    full_url = (
+        f"{url}"
+        f"?loadSheetId={sheet_id}"
+        f"&orderStatusOption={status}"
+        f"&direction=desc"
+    )
+
+    log.info(
+        f"CALLING API URL: {full_url}"
+    )
+
+    api_debug = {
+
+        "sheet_id": sheet_id,
+
+        "status": status,
+
+        "url": full_url
+    }
+
     try:
-
-        log.info(
-            f"Calling API: {url}"
-        )
-
-        log.info(
-            f"Params: {params}"
-        )
 
         response = session.get(
             url,
@@ -501,156 +468,88 @@ def fetch_orders(
             timeout=30
         )
 
-        log.info(
-            f"[{sheet_id}] "
-            f"{status} "
-            f"-> HTTP {response.status_code}"
-        )
+        api_debug["status_code"] = response.status_code
+
+        api_debug["response_text"] = response.text
+
+        api_debug["response_preview"] = response.text[:2000]
 
         log.info(
-            f"Final URL: {response.url}"
+            f"HTTP {response.status_code}"
         )
 
-        log.info(
-            f"Response preview: "
-            f"{response.text[:500]}"
+        # Save RAW response
+        raw_file = (
+            OUTPUT_DIR
+            / f"raw_{sheet_id}_{status}.txt"
         )
 
-        response.raise_for_status()
+        raw_file.write_text(
+            response.text,
+            encoding="utf-8"
+        )
 
-        # Try parsing JSON
+        api_debug["raw_response_file"] = str(raw_file)
+
         try:
 
             data = response.json()
 
+            api_debug["json_response"] = data
+
         except Exception as json_error:
 
-            log.error(
-                f"JSON parsing failed: "
-                f"{json_error}"
-            )
+            api_debug["json_error"] = str(json_error)
 
-            save_debug_response(
-                sheet_id,
-                status,
-                response
-            )
+            DEBUG_DATA["api_calls"].append(api_debug)
+
+            save_debug()
 
             return []
 
-        # Save FULL raw API response
-        save_debug_response(
-            sheet_id,
-            status,
-            response,
-            data
-        )
+        DEBUG_DATA["api_calls"].append(api_debug)
 
-        log.info(
-            f"Response type: "
-            f"{type(data)}"
-        )
+        save_debug()
 
-        # Debug dict keys
-        if isinstance(data, dict):
-
-            log.info(
-                f"Response keys: "
-                f"{list(data.keys())}"
-            )
-
-            # Extra debugging
-            for key in data.keys():
-
-                value = data[key]
-
-                if isinstance(value, list):
-
-                    log.info(
-                        f"Key '{key}' "
-                        f"contains list "
-                        f"with {len(value)} items"
-                    )
-
-        # If direct array
+        # Return data directly
         if isinstance(data, list):
-
-            log.info(
-                f"Direct list response "
-                f"with {len(data)} items"
-            )
 
             return data
 
-        # Try common response keys
-        possible_keys = [
-            "data",
-            "result",
-            "orders",
-            "rows",
-            "payload",
-            "items"
-        ]
+        if isinstance(data, dict):
 
-        for key in possible_keys:
+            if "data" in data:
 
-            if key in data:
+                return data["data"]
 
-                value = data[key]
+            if "result" in data:
 
-                if isinstance(value, list):
+                return data["result"]
 
-                    log.info(
-                        f"Using key '{key}' "
-                        f"with {len(value)} items"
-                    )
+            if "orders" in data:
 
-                    return value
-
-                elif isinstance(value, dict):
-
-                    log.info(
-                        f"Key '{key}' "
-                        f"is dict"
-                    )
-
-                    # Sometimes nested
-                    for nested_key in possible_keys:
-
-                        nested_value = value.get(
-                            nested_key
-                        )
-
-                        if isinstance(
-                            nested_value,
-                            list
-                        ):
-
-                            log.info(
-                                f"Using nested key "
-                                f"'{nested_key}' "
-                                f"with "
-                                f"{len(nested_value)} items"
-                            )
-
-                            return nested_value
-
-        log.warning(
-            f"No orders array found "
-            f"for sheet {sheet_id} "
-            f"status {status}"
-        )
+                return data["orders"]
 
         return []
 
     except Exception as e:
 
-        log.error(
-            f"Failed fetching "
-            f"{status} "
-            f"for sheet "
-            f"{sheet_id}: {e}"
-        )
+        api_debug["error"] = str(e)
+
+        DEBUG_DATA["api_calls"].append(api_debug)
+
+        DEBUG_DATA["errors"].append({
+
+            "stage": "fetch_orders",
+
+            "sheet_id": sheet_id,
+
+            "status": status,
+
+            "error": str(e)
+        })
+
+        save_debug()
 
         return []
 
@@ -667,7 +566,7 @@ def main():
     )
 
     log.info(
-        f"=== PostEx Scraper ==="
+        f"=== PostEx Scraper DEBUG ==="
     )
 
     log.info(
@@ -690,53 +589,27 @@ def main():
 
         page = context.new_page()
 
-        # Login
         login(page)
 
-        # Authenticated requests session
         session = get_auth_session(page)
 
-        # Get loadsheets
         loadsheets = scrape_loadsheet_ids(page)
 
         browser.close()
 
-    if not loadsheets:
+    DEBUG_DATA["final_loadsheets"] = loadsheets
 
-        log.warning(
-            "No loadsheets found"
-        )
+    save_debug()
 
-        result = {
-
-            "scrape_date": DATE_TAG,
-
-            "target_date": TARGET_LABEL,
-
-            "loadsheets": []
-        }
-
-        output_file.write_text(
-            json.dumps(
-                result,
-                indent=2,
-                ensure_ascii=False
-            )
-        )
-
-        return
-
-    # Fetch orders
     final_data = []
 
     for sheet in loadsheets:
 
-        sid = sheet["loadsheet_id"]
+        sid = sheet.get("loadsheet_id")
 
-        log.info(
-            f"Fetching orders "
-            f"for sheet {sid}"
-        )
+        if not sid:
+
+            continue
 
         booked = fetch_orders(
             session,
@@ -744,44 +617,14 @@ def main():
             "booked"
         )
 
-        delivered = fetch_orders(
-            session,
-            sid,
-            "delivered"
-        )
-
-        returned = fetch_orders(
-            session,
-            sid,
-            "returned"
-        )
-
-        reattempt = fetch_orders(
-            session,
-            sid,
-            "reattempt"
-        )
-
-        cancelled = fetch_orders(
-            session,
-            sid,
-            "cancelled"
-        )
-
         sheet["orders_by_status"] = {
 
-            "booked": booked,
-
-            "delivered": delivered,
-
-            "returned": returned,
-
-            "reattempt": reattempt,
-
-            "cancelled": cancelled
+            "booked": booked
         }
 
         final_data.append(sheet)
+
+        save_debug()
 
     result = {
 
@@ -798,35 +641,15 @@ def main():
             result,
             indent=2,
             ensure_ascii=False
-        )
+        ),
+        encoding="utf-8"
     )
 
     log.info(
-        f"Saved data -> {output_file}"
+        f"Saved -> {output_file}"
     )
 
-    # Optional webhook
-
-    if N8N_WEBHOOK:
-
-        try:
-
-            r = session.post(
-                N8N_WEBHOOK,
-                json=result,
-                timeout=30
-            )
-
-            log.info(
-                f"Webhook sent "
-                f"({r.status_code})"
-            )
-
-        except Exception as e:
-
-            log.error(
-                f"Webhook failed: {e}"
-            )
+    save_debug()
 
 
 if __name__ == "__main__":
