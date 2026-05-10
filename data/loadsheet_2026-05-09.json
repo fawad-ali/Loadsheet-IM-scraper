@@ -2,5 +2,7 @@
   "scrape_date": "2026-05-09",
   "target_date": "May 9, 2026",
   "loadsheets": [],
-  "error": "No loadsheets matched target date"
+  "debug": {
+    "rows_found": []
+  }
 }
