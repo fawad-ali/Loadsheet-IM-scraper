@@ -1,15 +1,18 @@
 """
 PostEx Loadsheet Scraper
 ========================
-DEBUG VERSION
+1. Logs into merchant.postex.pk using Playwright (headless Chrome)
+2. Navigates to /main/load-sheet-logs
+3. Finds loadsheets matching yesterday's date
+4. Extracts the numeric loadsheet ID from the dropdown class  more-menu-XXXX
+5. Calls the PostEx API directly (with JWT captured from browser) to get orders
+6. Saves everything to data/loadsheet_YYYY-MM-DD.json
+7. Optionally POSTs to an N8N webhook
 
-This version:
-1. Saves EVERY API URL being called
-2. Saves EVERY API response
-3. Saves browser-captured request URLs
-4. Saves page HTML
-5. Saves loadsheet row data
-6. Helps identify where scraping fails
+GitHub Secrets needed:
+  POSTEX_USERNAME   – merchant login email
+  POSTEX_PASSWORD   – merchant password
+  N8N_WEBHOOK_URL   – (optional) N8N webhook URL
 """
 
 import os
@@ -18,638 +21,403 @@ import json
 import time
 import logging
 import requests
-
 from datetime import datetime, timedelta
 from pathlib import Path
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-from playwright.sync_api import sync_playwright
-
-
-# ───────────────────────────────────────────────────────────────
-# Logging
-# ───────────────────────────────────────────────────────────────
-
+# ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
-
 log = logging.getLogger(__name__)
 
-
-# ───────────────────────────────────────────────────────────────
-# Config
-# ───────────────────────────────────────────────────────────────
-
-BASE_URL = "https://merchant.postex.pk"
-
-LOGIN_URL = f"{BASE_URL}/login"
-
+# ── Config ─────────────────────────────────────────────────────────────────
+BASE_URL      = "https://merchant.postex.pk"
+LOGIN_URL     = f"{BASE_URL}/login"
 LOADSHEET_URL = f"{BASE_URL}/main/load-sheet-logs"
+API_BASE      = "https://api.postex.pk/services/merchant/api/load-sheet"
 
-API_BASE = "https://api.postex.pk/services/merchant/api/load-sheet"
+USERNAME      = os.environ["POSTEX_USERNAME"]
+PASSWORD      = os.environ["POSTEX_PASSWORD"]
+N8N_WEBHOOK   = os.environ.get("N8N_WEBHOOK_URL", "")
 
-USERNAME = os.environ["POSTEX_USERNAME"]
-
-PASSWORD = os.environ["POSTEX_PASSWORD"]
-
-OUTPUT_DIR = Path("data")
-
+OUTPUT_DIR    = Path("data")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-DEBUG_FILE = OUTPUT_DIR / "debug_output.json"
-
-
-# ───────────────────────────────────────────────────────────────
-# Debug Storage
-# ───────────────────────────────────────────────────────────────
-
-DEBUG_DATA = {
-
-    "login": {},
-
-    "loadsheet_page": {},
-
-    "captured_requests": [],
-
-    "table_rows": [],
-
-    "matched_rows": [],
-
-    "api_calls": [],
-
-    "errors": []
-}
-
-
-def save_debug():
-
-    DEBUG_FILE.write_text(
-        json.dumps(
-            DEBUG_DATA,
-            indent=2,
-            ensure_ascii=False
-        ),
-        encoding="utf-8"
-    )
-
-    log.info(
-        f"Debug data saved -> {DEBUG_FILE}"
-    )
-
-
-# ───────────────────────────────────────────────────────────────
-# Date Handling
-# ───────────────────────────────────────────────────────────────
-
-DATE_OVERRIDE = os.environ.get("DATE_OVERRIDE")
-
-if DATE_OVERRIDE:
-
-    TARGET_DATE = datetime.strptime(
-        DATE_OVERRIDE,
-        "%Y-%m-%d"
-    )
-
+# Support manual date override from GitHub Actions workflow_dispatch
+_override = os.environ.get("DATE_OVERRIDE", "").strip()
+if _override:
+    TARGET_DATE = datetime.strptime(_override, "%Y-%m-%d")
+    log.info(f"Using overridden date: {_override}")
 else:
-
     TARGET_DATE = datetime.now() - timedelta(days=1)
 
-DATE_TAG = TARGET_DATE.strftime("%Y-%m-%d")
+# PostEx date format in table: "May 9, 2026, 9:16:58 PM"
+# We match just "May 9, 2026" inside that string
+try:
+    TARGET_LABEL = TARGET_DATE.strftime("%b %-d, %Y")   # Linux
+except ValueError:
+    TARGET_LABEL = TARGET_DATE.strftime("%b %#d, %Y")   # Windows
 
-TARGET_LABEL = TARGET_DATE.strftime("%b %-d, %Y")
 
-
-# ───────────────────────────────────────────────────────────────
-# Login
-# ───────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════
+# STEP 1 – Login
+# ══════════════════════════════════════════════════════════════════════════
 
 def login(page):
+    log.info("Navigating to login page ...")
+    page.goto(LOGIN_URL, wait_until="networkidle")
+    time.sleep(1)
 
-    log.info("Opening login page...")
-
-    page.goto(
-        LOGIN_URL,
-        wait_until="networkidle"
-    )
-
-    page.fill(
+    for sel in [
         'input[type="email"]',
-        USERNAME
-    )
+        'input[name="email"]',
+        'input[name="username"]',
+        'input[placeholder*="mail" i]',
+        'input[placeholder*="user" i]',
+    ]:
+        try:
+            if page.locator(sel).count() > 0:
+                page.fill(sel, USERNAME)
+                log.info(f"  Username filled ({sel})")
+                break
+        except Exception:
+            continue
 
-    page.fill(
-        'input[type="password"]',
-        PASSWORD
-    )
-
+    page.fill('input[type="password"]', PASSWORD)
     page.click('button[type="submit"]')
-
-    page.wait_for_url(
-        f"{BASE_URL}/main/**",
-        timeout=30000
-    )
-
-    current_url = page.url
-
-    DEBUG_DATA["login"] = {
-
-        "success": True,
-
-        "current_url": current_url
-    }
-
-    save_debug()
-
+    page.wait_for_url(f"{BASE_URL}/main/**", timeout=30_000)
     log.info("Login successful")
 
 
-# ───────────────────────────────────────────────────────────────
-# Auth Session
-# ───────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════
+# STEP 2 – Capture JWT from browser localStorage
+# ══════════════════════════════════════════════════════════════════════════
 
-def get_auth_session(page):
-
-    token = page.evaluate("""
-    () => {
-        return localStorage.getItem('token')
-            || localStorage.getItem('authToken')
-            || localStorage.getItem('access_token')
-            || sessionStorage.getItem('token')
-            || '';
-    }
-    """)
-
-    DEBUG_DATA["login"]["token_found"] = bool(token)
-
-    DEBUG_DATA["login"]["token_length"] = len(token)
-
-    save_debug()
-
-    if not token:
-
-        raise Exception(
-            "JWT token not found after login"
-        )
-
-    session = requests.Session()
-
-    session.headers.update({
-
-        "Accept": "application/json, text/plain, */*",
-
-        "Authorization": f"Bearer {token}",
-
-        "Origin": "https://merchant.postex.pk",
-
-        "Referer": "https://merchant.postex.pk/",
-
-        "User-Agent": (
-            "Mozilla/5.0 "
-            "(Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 "
-            "(KHTML, like Gecko) "
-            "Chrome/146.0.0.0 Safari/537.36"
-        )
-    })
-
-    for c in page.context.cookies():
-
-        session.cookies.set(
-            c["name"],
-            c["value"]
-        )
-
-    return session
-
-
-# ───────────────────────────────────────────────────────────────
-# Loadsheet Fetching
-# ───────────────────────────────────────────────────────────────
-
-def scrape_loadsheet_ids(page):
-
-    log.info(
-        f"Opening loadsheet page "
-        f"for {TARGET_LABEL}"
-    )
-
-    page.goto(
-        LOADSHEET_URL,
-        wait_until="networkidle",
-        timeout=60000
-    )
-
-    time.sleep(15)
-
-    DEBUG_DATA["loadsheet_page"] = {
-
-        "url": page.url,
-
-        "title": page.title()
-    }
-
-    # Save full HTML
-    html = page.content()
-
-    html_file = OUTPUT_DIR / "debug_page.html"
-
-    html_file.write_text(
-        html,
-        encoding="utf-8"
-    )
-
-    DEBUG_DATA["loadsheet_page"]["html_saved"] = str(html_file)
-
-    save_debug()
-
-    # Capture ALL requests
-    def capture_all_requests(request):
-
-        req = {
-
-            "url": request.url,
-
-            "method": request.method,
-
-            "resource_type": request.resource_type
+def get_auth_headers(page) -> dict:
+    token = page.evaluate("""() => {
+        const keys = ['token','authToken','access_token','accessToken','jwt','Authorization'];
+        for (const k of keys) {
+            const v = localStorage.getItem(k) || sessionStorage.getItem(k);
+            if (v) return v;
         }
-
-        DEBUG_DATA["captured_requests"].append(req)
-
-    page.on(
-        "request",
-        capture_all_requests
-    )
-
-    rows = page.query_selector_all("tr")
-
-    log.info(
-        f"Total TR rows found: {len(rows)}"
-    )
-
-    DEBUG_DATA["loadsheet_page"]["total_rows"] = len(rows)
-
-    results = []
-
-    for idx, row in enumerate(rows):
-
-        try:
-
-            cells = row.query_selector_all("td")
-
-            row_data = []
-
-            for cell in cells:
-
-                text = cell.inner_text().strip()
-
-                row_data.append(text)
-
-            DEBUG_DATA["table_rows"].append({
-
-                "index": idx,
-
-                "cells": row_data
-            })
-
-            save_debug()
-
-            if len(cells) < 7:
-                continue
-
-            date_text = row_data[5]
-
-            if TARGET_LABEL not in date_text:
-                continue
-
-            loadsheet_number = row_data[0]
-
-            total_orders = row_data[1]
-
-            status = row_data[6]
-
-            log.info(
-                f"Matched loadsheet row: "
-                f"{loadsheet_number}"
-            )
-
-            DEBUG_DATA["matched_rows"].append({
-
-                "loadsheet_number": loadsheet_number,
-
-                "date": date_text,
-
-                "status": status,
-
-                "total_orders": total_orders
-            })
-
-            save_debug()
-
-            # Try clicking row buttons
-            menu_btn = row.query_selector(
-                "a.toggle-tigger"
-            )
-
-            if menu_btn:
-
-                menu_btn.click()
-
-                time.sleep(2)
-
-            print_btn = row.query_selector(
-                'a[data-target="#r2pPrint"]'
-            )
-
-            if print_btn:
-
-                print_btn.click()
-
-                time.sleep(5)
-
-            # Search captured URLs for loadsheet ID
-            found_sheet_id = None
-
-            for req in DEBUG_DATA["captured_requests"]:
-
-                match = re.search(
-                    r"/load-sheet/(\d+)/order",
-                    req["url"]
-                )
-
-                if match:
-
-                    found_sheet_id = match.group(1)
-
-                    req["captured_sheet_id"] = found_sheet_id
-
-                    break
-
-            results.append({
-
-                "loadsheet_number": loadsheet_number,
-
-                "loadsheet_id": found_sheet_id,
-
-                "total_orders": total_orders,
-
-                "date": date_text,
-
-                "status": status
-            })
-
-            save_debug()
-
-        except Exception as e:
-
-            DEBUG_DATA["errors"].append({
-
-                "stage": "scrape_loadsheet_ids",
-
-                "row": idx,
-
-                "error": str(e)
-            })
-
-            save_debug()
-
-    return results
-
-
-# ───────────────────────────────────────────────────────────────
-# Orders Fetching
-# ───────────────────────────────────────────────────────────────
-
-def fetch_orders(
-    session,
-    sheet_id,
-    status="booked"
-):
-
-    url = (
-        f"{API_BASE}/{sheet_id}/order"
-    )
-
-    params = {
-
-        "loadSheetId": sheet_id,
-
-        "orderStatusOption": status,
-
-        "direction": "desc"
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            const v = localStorage.getItem(k);
+            if (v && v.startsWith('eyJ')) return v;
+        }
+        return '';
+    }""")
+
+    headers = {
+        "Content-Type": "application/json",
+        "Accept":       "application/json",
+        "Origin":       BASE_URL,
+        "Referer":      LOADSHEET_URL,
     }
 
-    full_url = (
-        f"{url}"
-        f"?loadSheetId={sheet_id}"
-        f"&orderStatusOption={status}"
-        f"&direction=desc"
-    )
+    if token:
+        token = token.replace("Bearer ", "").strip()
+        headers["Authorization"] = f"Bearer {token}"
+        log.info("JWT captured from localStorage")
+    else:
+        log.warning("JWT not found — API calls may return 401")
 
-    log.info(
-        f"CALLING API URL: {full_url}"
-    )
+    return headers
 
-    api_debug = {
 
-        "sheet_id": sheet_id,
+def get_cookies(page) -> dict:
+    return {c["name"]: c["value"] for c in page.context.cookies()}
 
-        "status": status,
 
-        "url": full_url
-    }
+# ══════════════════════════════════════════════════════════════════════════
+# STEP 3 – Scrape loadsheet table and extract IDs
+# ══════════════════════════════════════════════════════════════════════════
+
+def scrape_loadsheet_rows(page) -> list:
+    """
+    KEY INSIGHT: The loadsheet numeric ID is embedded in the dropdown class:
+      <ul class="dropdown-list more-menu-4786">
+    The number after 'more-menu-' IS the loadsheet ID for the API.
+    """
+    log.info(f"Opening loadsheet logs page ... (looking for '{TARGET_LABEL}')")
+    page.goto(LOADSHEET_URL, wait_until="networkidle")
 
     try:
-
-        response = session.get(
-            url,
-            params=params,
-            timeout=30
-        )
-
-        api_debug["status_code"] = response.status_code
-
-        api_debug["response_text"] = response.text
-
-        api_debug["response_preview"] = response.text[:2000]
-
-        log.info(
-            f"HTTP {response.status_code}"
-        )
-
-        # Save RAW response
-        raw_file = (
-            OUTPUT_DIR
-            / f"raw_{sheet_id}_{status}.txt"
-        )
-
-        raw_file.write_text(
-            response.text,
-            encoding="utf-8"
-        )
-
-        api_debug["raw_response_file"] = str(raw_file)
-
-        try:
-
-            data = response.json()
-
-            api_debug["json_response"] = data
-
-        except Exception as json_error:
-
-            api_debug["json_error"] = str(json_error)
-
-            DEBUG_DATA["api_calls"].append(api_debug)
-
-            save_debug()
-
-            return []
-
-        DEBUG_DATA["api_calls"].append(api_debug)
-
-        save_debug()
-
-        # Return data directly
-        if isinstance(data, list):
-
-            return data
-
-        if isinstance(data, dict):
-
-            if "data" in data:
-
-                return data["data"]
-
-            if "result" in data:
-
-                return data["result"]
-
-            if "orders" in data:
-
-                return data["orders"]
-
+        page.wait_for_selector("table#excel-table tbody tr", timeout=25_000)
+        log.info("Loadsheet table rendered")
+    except PWTimeout:
+        log.error("Table never appeared — saving screenshot")
+        page.screenshot(path="data/debug_page.png")
         return []
 
-    except Exception as e:
+    time.sleep(2)
 
-        api_debug["error"] = str(e)
+    rows = page.query_selector_all("table#excel-table tbody tr")
+    log.info(f"Total rows in table: {len(rows)}")
 
-        DEBUG_DATA["api_calls"].append(api_debug)
-
-        DEBUG_DATA["errors"].append({
-
-            "stage": "fetch_orders",
-
-            "sheet_id": sheet_id,
-
-            "status": status,
-
-            "error": str(e)
-        })
-
-        save_debug()
-
-        return []
-
-
-# ───────────────────────────────────────────────────────────────
-# Main
-# ───────────────────────────────────────────────────────────────
-
-def main():
-
-    output_file = (
-        OUTPUT_DIR
-        / f"loadsheet_{DATE_TAG}.json"
-    )
-
-    log.info(
-        f"=== PostEx Scraper DEBUG ==="
-    )
-
-    log.info(
-        f"Target date: {TARGET_LABEL}"
-    )
-
-    with sync_playwright() as pw:
-
-        browser = pw.chromium.launch(
-
-            headless=True,
-
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage"
-            ]
-        )
-
-        context = browser.new_context()
-
-        page = context.new_page()
-
-        login(page)
-
-        session = get_auth_session(page)
-
-        loadsheets = scrape_loadsheet_ids(page)
-
-        browser.close()
-
-    DEBUG_DATA["final_loadsheets"] = loadsheets
-
-    save_debug()
-
-    final_data = []
-
-    for sheet in loadsheets:
-
-        sid = sheet.get("loadsheet_id")
-
-        if not sid:
-
+    matched = []
+    for i, row in enumerate(rows):
+        cells = row.query_selector_all("td")
+        if len(cells) < 7:
             continue
 
-        booked = fetch_orders(
-            session,
-            sid,
-            "booked"
+        lds_number = cells[0].inner_text().strip()
+        total_text = cells[1].inner_text().strip()
+        picked_txt = cells[2].inner_text().strip()
+        unpick_txt = cells[3].inner_text().strip()
+        rider      = cells[4].inner_text().strip()
+        date_text  = cells[5].inner_text().strip()
+        status     = cells[6].inner_text().strip()
+
+        log.info(f"  Row {i+1}: {lds_number} | date='{date_text}'")
+
+        if TARGET_LABEL not in date_text:
+            continue
+
+        # Extract ID from class="dropdown-list more-menu-XXXX"
+        sheet_id = None
+        ul_el = row.query_selector("ul[class*='more-menu-']")
+        if ul_el:
+            ul_class = ul_el.get_attribute("class") or ""
+            m = re.search(r"more-menu-(\d+)", ul_class)
+            if m:
+                sheet_id = m.group(1)
+
+        if not sheet_id:
+            log.warning(f"  Could not extract ID for {lds_number} — skipping")
+            continue
+
+        def safe_int(s):
+            s = re.sub(r"[^\d]", "", s)
+            return int(s) if s else 0
+
+        matched.append({
+            "loadsheet_number": lds_number,
+            "loadsheet_id":     sheet_id,
+            "total_orders":     safe_int(total_text),
+            "picked":           safe_int(picked_txt),
+            "unpicked":         safe_int(unpick_txt),
+            "rider":            rider,
+            "date":             date_text,
+            "status":           status,
+        })
+        log.info(f"  MATCHED: {lds_number} => ID={sheet_id}")
+
+    log.info(f"Loadsheets matched for {TARGET_LABEL}: {len(matched)}")
+    return matched
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# STEP 4 – Fetch orders from PostEx API
+# ══════════════════════════════════════════════════════════════════════════
+
+STATUS_OPTIONS = ["booked", "reattempt", "returned", "cancelled", "delivered"]
+
+
+def fetch_orders(sheet_id: str, status: str, headers: dict, cookies: dict) -> list:
+    all_orders = []
+    page_num   = 1
+    page_size  = 200
+
+    while True:
+        url = (
+            f"{API_BASE}/{sheet_id}/order"
+            f"?loadSheetId={sheet_id}"
+            f"&orderStatusOption={status}"
+            f"&direction=desc"
+            f"&page={page_num}"
+            f"&limit={page_size}"
+        )
+        log.info(f"    API [{status}] page {page_num} ...")
+
+        try:
+            resp = requests.get(url, headers=headers, cookies=cookies, timeout=30)
+        except requests.RequestException as e:
+            log.error(f"    Request error: {e}")
+            break
+
+        if resp.status_code == 401:
+            log.error("    401 Unauthorized — JWT invalid or expired")
+            break
+
+        if not resp.ok:
+            log.warning(f"    HTTP {resp.status_code} for status={status}")
+            break
+
+        try:
+            data = resp.json()
+        except ValueError:
+            log.warning("    Non-JSON response")
+            break
+
+        orders = (
+            data.get("data")
+            or data.get("orders")
+            or data.get("result")
+            or data.get("items")
+            or (data if isinstance(data, list) else [])
         )
 
-        sheet["orders_by_status"] = {
+        if not orders:
+            break
 
-            "booked": booked
-        }
+        all_orders.extend(orders)
+        log.info(f"    Got {len(orders)} orders (total: {len(all_orders)})")
 
-        final_data.append(sheet)
+        if len(orders) < page_size:
+            break
+        page_num += 1
 
-        save_debug()
+    return all_orders
 
-    result = {
 
-        "scrape_date": DATE_TAG,
+def fetch_all_orders_for_sheet(sheet_id: str, headers: dict, cookies: dict) -> dict:
+    result = {}
+    for status in STATUS_OPTIONS:
+        orders = fetch_orders(sheet_id, status, headers, cookies)
+        result[status] = orders
+        log.info(f"    [{status}] => {len(orders)} orders")
+        time.sleep(0.3)
+    return result
 
-        "target_date": TARGET_LABEL,
 
-        "loadsheets": final_data
+# ══════════════════════════════════════════════════════════════════════════
+# STEP 5 – Build summary
+# ══════════════════════════════════════════════════════════════════════════
+
+def build_grand_summary(loadsheets: list) -> dict:
+    total_handed = sum(s.get("total_orders", 0) for s in loadsheets)
+    total_picked = sum(s.get("picked",       0) for s in loadsheets)
+    total_unpick = sum(s.get("unpicked",     0) for s in loadsheets)
+
+    status_counts = {}
+    total_cod     = 0.0
+
+    for sheet in loadsheets:
+        for status, orders in sheet.get("orders_by_status", {}).items():
+            status_counts[status] = status_counts.get(status, 0) + len(orders)
+            if status == "delivered":
+                for o in orders:
+                    amt = (
+                        o.get("codAmount")
+                        or o.get("cod_amount")
+                        or o.get("amount")
+                        or o.get("orderAmount")
+                        or o.get("collectedAmount")
+                        or 0
+                    )
+                    try:
+                        total_cod += float(str(amt).replace(",", ""))
+                    except (ValueError, TypeError):
+                        pass
+
+    return {
+        "total_loadsheets":         len(loadsheets),
+        "total_orders_handed_over": total_handed,
+        "total_picked":             total_picked,
+        "total_unpicked":           total_unpick,
+        "orders_by_status":         status_counts,
+        "reattempt_count":          status_counts.get("reattempt", 0),
+        "returned_count":           status_counts.get("returned",  0),
+        "delivered_count":          status_counts.get("delivered", 0),
+        "estimated_cod_pkr":        round(total_cod, 2),
+        "cheque_note": (
+            "COD estimate from delivered orders. "
+            "Actual cheque depends on PostEx settlement cycle."
+        ),
     }
 
-    output_file.write_text(
 
-        json.dumps(
-            result,
-            indent=2,
-            ensure_ascii=False
-        ),
-        encoding="utf-8"
-    )
+# ══════════════════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════════════════
 
-    log.info(
-        f"Saved -> {output_file}"
-    )
+def main():
+    date_tag    = TARGET_DATE.strftime("%Y-%m-%d")
+    output_file = OUTPUT_DIR / f"loadsheet_{date_tag}.json"
 
-    save_debug()
+    log.info(f"=== PostEx Scraper | Target: {TARGET_LABEL} ===")
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 900},
+        )
+        page = context.new_page()
+
+        # 1. Login
+        login(page)
+
+        # 2. Capture JWT + cookies for direct API calls
+        auth_headers = get_auth_headers(page)
+        auth_cookies = get_cookies(page)
+
+        # 3. Scrape the loadsheet table
+        loadsheets = scrape_loadsheet_rows(page)
+        browser.close()
+
+    if not loadsheets:
+        log.warning(f"No loadsheets found for {TARGET_LABEL}.")
+        result = {
+            "scrape_date":   date_tag,
+            "target_date":   TARGET_LABEL,
+            "loadsheets":    [],
+            "grand_summary": {},
+        }
+        output_file.write_text(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+
+    # 4. Fetch orders via API for each loadsheet
+    log.info(f"Fetching orders for {len(loadsheets)} loadsheet(s) via API ...")
+    for sheet in loadsheets:
+        sid = sheet["loadsheet_id"]
+        log.info(f"  {sheet['loadsheet_number']} (id={sid})")
+        sheet["orders_by_status"] = fetch_all_orders_for_sheet(
+            sid, auth_headers, auth_cookies
+        )
+
+    # 5. Grand summary
+    grand_summary = build_grand_summary(loadsheets)
+
+    result = {
+        "scrape_date":   date_tag,
+        "target_date":   TARGET_LABEL,
+        "grand_summary": grand_summary,
+        "loadsheets":    loadsheets,
+    }
+
+    # 6. Save JSON
+    output_file.write_text(json.dumps(result, indent=2, ensure_ascii=False))
+    log.info(f"Data saved -> {output_file}")
+
+    # 7. Push to N8N (optional)
+    if N8N_WEBHOOK:
+        try:
+            r = requests.post(N8N_WEBHOOK, json=result, timeout=30)
+            r.raise_for_status()
+            log.info(f"Pushed to N8N webhook (HTTP {r.status_code})")
+        except Exception as e:
+            log.error(f"N8N webhook failed: {e}")
+
+    # 8. Print summary
+    log.info("=" * 50)
+    log.info("GRAND SUMMARY")
+    log.info("=" * 50)
+    for k, v in grand_summary.items():
+        if k != "cheque_note":
+            log.info(f"  {k}: {v}")
+    log.info("=" * 50)
 
 
 if __name__ == "__main__":
