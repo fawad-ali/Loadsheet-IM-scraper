@@ -175,6 +175,7 @@ def get_auth_session(page):
 # Loadsheet Fetching
 # ───────────────────────────────────────────────────────────────
 
+
 def scrape_loadsheet_ids(page):
 
     log.info(
@@ -184,17 +185,48 @@ def scrape_loadsheet_ids(page):
 
     page.goto(
         LOADSHEET_URL,
-        wait_until="networkidle"
+        wait_until="domcontentloaded",
+        timeout=60000
     )
 
-    page.wait_for_selector(
-        "tbody tr",
-        timeout=30000
-    )
+    # Give Angular time to render
+    time.sleep(10)
 
-    rows = page.query_selector_all(
-        "tbody tr"
-    )
+    # Sometimes PostEx loads inside Angular components
+    # so we wait for ANY table row manually
+    rows = []
+
+    for i in range(30):
+
+        rows = page.query_selector_all("tr.data-item")
+
+        if rows:
+            break
+
+        log.info(
+            f"Waiting for loadsheet rows... "
+            f"{i+1}/30"
+        )
+
+        time.sleep(2)
+
+    if not rows:
+
+        log.error(
+            "No loadsheet rows found!"
+        )
+
+        # Save page HTML for debugging
+        html = page.content()
+
+        with open(
+            "debug_page.html",
+            "w",
+            encoding="utf-8"
+        ) as f:
+            f.write(html)
+
+        return []
 
     log.info(
         f"Found {len(rows)} table rows"
@@ -217,7 +249,6 @@ def scrape_loadsheet_ids(page):
                 .strip()
             )
 
-            # Match target date
             if TARGET_LABEL not in date_text:
                 continue
 
@@ -240,7 +271,7 @@ def scrape_loadsheet_ids(page):
             )
 
             log.info(
-                f"Matching loadsheet row: "
+                f"Matched row: "
                 f"{loadsheet_number}"
             )
 
@@ -248,11 +279,11 @@ def scrape_loadsheet_ids(page):
 
             def capture_request(request):
 
-                url = request.url
+                import re
 
                 match = re.search(
                     r"/load-sheet/(\d+)/order",
-                    url
+                    request.url
                 )
 
                 if match:
@@ -270,26 +301,21 @@ def scrape_loadsheet_ids(page):
                 capture_request
             )
 
-            # Open dropdown
             menu_btn = row.query_selector(
                 "a.toggle-tigger"
             )
 
             if menu_btn:
                 menu_btn.click()
-
                 time.sleep(1)
 
-            # Click Print
             print_btn = row.query_selector(
                 'a[data-target="#r2pPrint"]'
             )
 
             if print_btn:
-
                 print_btn.click()
-
-                time.sleep(3)
+                time.sleep(5)
 
             page.remove_listener(
                 "request",
@@ -299,7 +325,7 @@ def scrape_loadsheet_ids(page):
             if not captured_sheet_id:
 
                 log.warning(
-                    f"No sheet ID found for "
+                    f"No ID captured for "
                     f"{loadsheet_number}"
                 )
 
@@ -310,17 +336,13 @@ def scrape_loadsheet_ids(page):
             results.append({
 
                 "loadsheet_number": loadsheet_number,
-
                 "loadsheet_id": sheet_id,
-
                 "total_orders": int(total_orders),
-
                 "date": date_text,
-
                 "status": status
+
             })
 
-            # Close modal if opened
             page.keyboard.press("Escape")
 
             time.sleep(1)
