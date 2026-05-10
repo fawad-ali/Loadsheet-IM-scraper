@@ -110,16 +110,18 @@ def scrape_loadsheet_ids(page) -> list[dict]:
     (loadsheet_id is parsed from loadsheet_number for the API call)
     """
     log.info(f"Opening loadsheet logs page … (looking for {YESTERDAY_LABEL})")
-page.goto(LOADSHEET_URL, wait_until="networkidle")
+    page.goto(LOADSHEET_URL, wait_until="networkidle")
 
-# Wait until Angular renders actual rows into the table
-try:
-    page.wait_for_selector("table#excel-table tbody tr", timeout=15_000)
-except PWTimeout:
-    log.warning("Table rows did not appear in 15s — page may still be loading")
+    # Wait until Angular renders actual rows into the table
+    try:
+        page.wait_for_selector("table#excel-table tbody tr", timeout=20_000)
+        log.info("Table rows appeared ✓")
+    except PWTimeout:
+        log.warning("Table rows did not appear in 20s — trying anyway")
 
-time.sleep(2)  # small buffer after rows appear
-rows = page.query_selector_all("table#excel-table tbody tr")
+    time.sleep(2)  # small buffer after rows appear
+
+    rows = page.query_selector_all("table#excel-table tbody tr")
     log.info(f"Found {len(rows)} loadsheet rows total")
 
     yesterday_sheets = []
