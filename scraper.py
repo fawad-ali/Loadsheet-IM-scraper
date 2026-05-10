@@ -1,4 +1,4 @@
-```python name=scraper.py
+
 """
 PostEx Loadsheet Scraper
 ========================
@@ -447,4 +447,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
+
