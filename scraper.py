@@ -344,17 +344,28 @@ def run_browser_session():
 
         # ── Step E: Navigate to loadsheet page ───────────────────────────────
         # Now Angular CAN load because our proxy fulfills all API calls
-        page.goto(LOADSHEET_URL, wait_until="networkidle")
-        
-        trace("Waiting for Angular table to render (up to 30s)")
-        try:
-            page.wait_for_selector("tr.data-item td", timeout=30_000)
-            trace("Table rows with <td> are visible")
-        except PWTimeout:
-            trace("Timed out — proceeding anyway")
-        
-        time.sleep(3)  # Angular change detection settle
-        
+page.goto(LOADSHEET_URL, wait_until="networkidle")
+
+trace("Waiting for load sheet table to fully appear")
+
+try:
+    # Wait for table body
+    page.wait_for_selector("table tbody", timeout=60_000)
+
+    # Wait until rows actually exist
+    page.wait_for_function("""
+        () => {
+            const rows = document.querySelectorAll('table tbody tr.data-item');
+            return rows.length > 0;
+        }
+    """, timeout=60_000)
+
+    trace("Loadsheet table rows appeared")
+
+except PWTimeout:
+    trace("Timed out waiting for loadsheet table")
+
+time.sleep(8)  # extra Angular settle time        
         dump_html(page,  "03_loadsheet_page")
         screenshot(page, "03_loadsheet_page")
 
