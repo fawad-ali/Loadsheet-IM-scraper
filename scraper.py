@@ -141,14 +141,23 @@ if DEBUG_ON:
 # Date
 # ────────────────────────────────────────────────────────────────…[...]
 
+from zoneinfo import ZoneInfo
+
 if TESTING_ON:
     TARGET_DATE = datetime(2026, 5, 8)
 else:
     DATE_OVERRIDE = os.environ.get("DATE_OVERRIDE")
+
     if DATE_OVERRIDE:
         TARGET_DATE = datetime.strptime(DATE_OVERRIDE, "%Y-%m-%d")
     else:
-        TARGET_DATE = datetime.now() - timedelta(days=1)
+        pakistan_now = datetime.now(ZoneInfo("Asia/Karachi"))
+
+        TARGET_DATE = (
+            pakistan_now - timedelta(days=1)
+        )
+
+print(f"Using target date: {TARGET_DATE.strftime('%Y-%m-%d')}")
 
 DATE_TAG     = TARGET_DATE.strftime("%Y-%m-%d")
 TARGET_MONTH = TARGET_DATE.strftime("%b")
