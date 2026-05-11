@@ -77,21 +77,32 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 # Configuration
 # ────────────────────────────────────────────────────────────────……[...]
 
-SAVE_ONLY_LOADSHEET_SUMMARY = True  # Set to True to save only summary, False to save all data
-TESTING_ON = True # Set to True jo scrapt a specific date data for testing
+SAVE_ONLY_LOADSHEET_SUMMARY = True   # Set to True to save only summary, False to save all data
+TESTING_ON = True                    # Set to True to scrape a specific date for testing
+DEBUG_ON   = false                    # Set to True to enable all logging/screenshots/debug files;
+                                     # Set to False for silent production runs
+
 
 # ────────────────────────────────────────────────────────────────……[...]
 # Logging
 # ────────────────────────────────────────────────────────────────……[...]
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)-8s] %(funcName)s:%(lineno)d | %(message)s",
-)
+if DEBUG_ON:
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s [%(levelname)-8s] %(funcName)s:%(lineno)d | %(message)s",
+    )
+else:
+    # Suppress everything — only CRITICAL errors will ever surface
+    logging.basicConfig(level=logging.CRITICAL)
+
 log = logging.getLogger("postex-v5")
 
 STEP = 0
 def trace(msg, data=None):
+    """Log a numbered debug step. No-op when DEBUG_ON is False."""
+    if not DEBUG_ON:
+        return
     global STEP
     STEP += 1
     prefix = f"[STEP {STEP:06d}]"
@@ -119,21 +130,26 @@ PASSWORD = os.environ.get("POSTEX_PASSWORD", "")
 
 OUTPUT_DIR = Path("data")
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+# Debug directory is only created when debugging is active
 DEBUG_DIR = OUTPUT_DIR / "debug"
-DEBUG_DIR.mkdir(exist_ok=True)
+if DEBUG_ON:
+    DEBUG_DIR.mkdir(exist_ok=True)
+
 
 # ────────────────────────────────────────────────────────────────…[...]
 # Date
 # ────────────────────────────────────────────────────────────────…[...]
 
 if TESTING_ON:
-    TARGET_DATE = datetime(2026, 5, 9)
+    TARGET_DATE = datetime(2026, 5, 11)
 else:
     DATE_OVERRIDE = os.environ.get("DATE_OVERRIDE")
     if DATE_OVERRIDE:
         TARGET_DATE = datetime.strptime(DATE_OVERRIDE, "%Y-%m-%d")
     else:
         TARGET_DATE = datetime.now() - timedelta(days=1)
+
 DATE_TAG     = TARGET_DATE.strftime("%Y-%m-%d")
 TARGET_MONTH = TARGET_DATE.strftime("%b")
 TARGET_DAY   = TARGET_DATE.day
@@ -155,6 +171,9 @@ def write_json(path, data):
     )
 
 def screenshot(page, name):
+    """Save a screenshot. No-op when DEBUG_ON is False."""
+    if not DEBUG_ON:
+        return
     try:
         p = DEBUG_DIR / f"{name}.png"
         page.screenshot(path=str(p), full_page=True)
@@ -163,6 +182,9 @@ def screenshot(page, name):
         log.exception("screenshot failed")
 
 def dump_html(page, name):
+    """Save page HTML to disk. No-op when DEBUG_ON is False."""
+    if not DEBUG_ON:
+        return
     try:
         html = page.content()
         p = DEBUG_DIR / f"{name}.html"
@@ -281,8 +303,10 @@ def run_browser_session():
         context = browser.new_context()
         page    = context.new_page()
 
-        page.on("console",   lambda m: log.debug(f"BROWSER[{m.type}] {m.text}"))
-        page.on("pageerror", lambda e: log.debug(f"PAGE ERROR: {e}"))
+        # Browser console/error forwarding only when debugging
+        if DEBUG_ON:
+            page.on("console",   lambda m: log.debug(f"BROWSER[{m.type}] {m.text}"))
+            page.on("pageerror", lambda e: log.debug(f"PAGE ERROR: {e}"))
 
         # ── Step A: Login ────────────────────────────────────────────────────
         trace("Navigating to login")
@@ -320,7 +344,6 @@ def run_browser_session():
             raise RuntimeError("No token found after login")
 
         # ── Step C: Build a requests.Session for API proxy ───────────────────
-        # This session is used INSIDE the route handler to actually call the API
         proxy_session = requests.Session()
         proxy_session.headers.update({
             "Accept":          "application/json, text/plain, */*",
@@ -338,9 +361,6 @@ def run_browser_session():
             proxy_session.cookies.set(c["name"], c["value"], domain=c.get("domain"))
 
         # ── Step D: Route ALL api.postex.pk requests through requests ─────────
-        # The browser can't reach api.postex.pk, but Python can.
-        # We intercept every request, fire it in Python, return the response.
-        
         def handle_api_route(route, request):
             url     = request.url
             method  = request.method
@@ -350,7 +370,6 @@ def run_browser_session():
             intercepted_urls.append(url)
 
             try:
-                # Merge browser headers with our auth headers
                 req_headers = {
                     "Accept":          "application/json, text/plain, */*",
                     "Accept-Language": "en-US,en;q=0.9",
@@ -375,13 +394,13 @@ def run_browser_session():
                     "preview": resp.text[:500]
                 })
 
-                # Save every API response for debugging
-                safe = re.sub(r"[^a-zA-Z0-9._-]", "_", url)[:100]
-                (DEBUG_DIR / f"proxy_{safe}.json").write_text(
-                    resp.text, encoding="utf-8"
-                )
+                # Save every API response for debugging (only when DEBUG_ON)
+                if DEBUG_ON:
+                    safe = re.sub(r"[^a-zA-Z0-9._-]", "_", url)[:100]
+                    (DEBUG_DIR / f"proxy_{safe}.json").write_text(
+                        resp.text, encoding="utf-8"
+                    )
 
-                # Fulfill the browser request with the real API response
                 route.fulfill(
                     status  = resp.status_code,
                     headers = {
@@ -393,26 +412,21 @@ def run_browser_session():
 
             except Exception as e:
                 log.exception(f"Proxy failed for {url}")
-                # Return empty JSON so Angular doesn't crash
                 route.fulfill(
                     status  = 200,
                     headers = {"Content-Type": "application/json"},
                     body    = b"{}",
                 )
 
-        # Intercept all requests to api.postex.pk
         page.route(f"**/{API_HOST}/**", handle_api_route)
 
         trace("Route interceptor active — navigating to loadsheet page")
 
         # ── Step E: Navigate to loadsheet page ───────────────────────────────
-        # Now Angular CAN load because our proxy fulfills all API calls
         page.goto(LOADSHEET_URL, wait_until="networkidle")
         
-        # Ensure we're actually on the loadsheet page
         trace(f"Current URL after goto: {page.url}")
         
-        # Wait for the URL to be correct
         if "/load-sheet-logs" not in page.url:
             trace("Not on loadsheet page yet, waiting and retrying")
             time.sleep(3)
@@ -422,23 +436,19 @@ def run_browser_session():
         trace("Waiting for load sheet table to fully appear")
 
         try:
-            # Wait for table body
             page.wait_for_selector("table tbody", timeout=60_000)
-
-            # Wait until rows actually exist
             page.wait_for_function("""
                 () => {
                     const rows = document.querySelectorAll('table tbody tr.data-item');
                     return rows.length > 0;
                 }
             """, timeout=60_000)
-
             trace("Loadsheet table rows appeared")
 
         except PWTimeout:
             trace("Timed out waiting for loadsheet table")
 
-        time.sleep(8)  # extra Angular settle time
+        time.sleep(8)
         dump_html(page, "03_loadsheet_page")
         screenshot(page, "03_loadsheet_page")
 
@@ -447,7 +457,6 @@ def run_browser_session():
         trace(f"Found {len(rows)} tr.data-item rows")
 
         if not rows:
-            # Try broader selector
             rows = page.query_selector_all("tr.data-item")
             trace(f"Broad selector found {len(rows)} rows")
 
@@ -455,7 +464,10 @@ def run_browser_session():
 
         for idx, row in enumerate(rows):
             raw_html = row.inner_html()
-            (DEBUG_DIR / f"row_{idx}.html").write_text(raw_html, encoding="utf-8")
+
+            # Save per-row HTML only when debugging
+            if DEBUG_ON:
+                (DEBUG_DIR / f"row_{idx}.html").write_text(raw_html, encoding="utf-8")
 
             cells = row.query_selector_all("td")
             trace(f"Row {idx}: {len(cells)} cells")
@@ -470,14 +482,6 @@ def run_browser_session():
                 except Exception:
                     return ""
 
-            # Cell layout from Document 3:
-            # [0] loadsheet number
-            # [1] total orders (clickable blue span)
-            # [2] delivered
-            # [3] returns
-            # [4] empty
-            # [5] date
-            # [6] status
             date_text = cell_text(5)
             status    = cell_text(6).upper()
 
@@ -510,15 +514,8 @@ def run_browser_session():
             trace(f"Row {idx} matched", row_data)
 
             # ── Step G: Click the order-count span ──────────────────────────
-            # From real HTML: <td class="data-col dt-tracking" style="width: 100px;">
-            #                   <span class="smaller-text" style="cursor: pointer; color: blue;"> 28 </span>
-            #
-            # The interceptor will capture the resulting API call URL
-            # which contains the REAL sheet_id.
-
             click_urls_before = len(intercepted_urls)
 
-            # Try selectors in order
             clicked = False
             for sel in [
                 "td.dt-tracking span.smaller-text",
@@ -539,7 +536,6 @@ def run_browser_session():
                     trace(f"Row {idx}: selector '{sel}' failed: {e}")
 
             if not clicked:
-                # Last resort: click by position (second cell)
                 try:
                     cells[1].click()
                     clicked = True
@@ -548,15 +544,12 @@ def run_browser_session():
                     trace(f"Row {idx}: cell[1] click failed: {e}")
 
             if clicked:
-                # Wait for the API call to come through the interceptor
                 trace(f"Row {idx}: waiting 8s for order API call")
                 time.sleep(8)
 
-                # Find new URLs added after the click
                 new_urls = intercepted_urls[click_urls_before:]
                 trace(f"Row {idx}: {len(new_urls)} new API URLs after click", new_urls)
 
-                # Find the order URL — pattern: /load-sheet/{id}/order
                 order_re = re.compile(r"/load-sheet/(\d+)/order")
                 for u in new_urls:
                     m2 = order_re.search(u)
@@ -568,18 +561,19 @@ def run_browser_session():
 
                 if not row_data["real_sheet_id"]:
                     trace(f"Row {idx}: real_sheet_id not found in new URLs", new_urls)
-                    # Dump all intercepted for inspection
-                    write_json(
-                        DEBUG_DIR / f"all_intercepted_row{idx}.json",
-                        intercepted_urls
-                    )
+                    if DEBUG_ON:
+                        write_json(
+                            DEBUG_DIR / f"all_intercepted_row{idx}.json",
+                            intercepted_urls
+                        )
             else:
                 trace(f"Row {idx}: could not click any span")
 
             matched_rows.append(row_data)
 
         trace("All intercepted API URLs", intercepted_urls)
-        write_json(DEBUG_DIR / "all_intercepted_urls.json", intercepted_urls)
+        if DEBUG_ON:
+            write_json(DEBUG_DIR / "all_intercepted_urls.json", intercepted_urls)
 
         browser.close()
 
@@ -607,12 +601,10 @@ def fetch_orders(session, sheet_id, order_api_url=None, row_status="COMPLETED"):
     """
     base_url = f"https://{API_HOST}/services/merchant/api/load-sheet/{sheet_id}/order"
 
-    # If we have the exact URL, try it first
     urls_to_try = []
     if order_api_url:
         urls_to_try.append(("(captured)", order_api_url, {}))
 
-    # Then try status option candidates
     for opt in STATUS_OPTIONS.get(row_status, ["booked", "delivered", "return", ""]):
         params = {"loadSheetId": sheet_id, "direction": "desc"}
         if opt:
@@ -624,8 +616,11 @@ def fetch_orders(session, sheet_id, order_api_url=None, row_status="COMPLETED"):
         try:
             r = session.get(url, params=params if params else None, timeout=30)
             raw = r.text
-            (DEBUG_DIR / f"orders_{sheet_id}_{re.sub(r'[^a-z0-9]', '_', label)}.json"
-             ).write_text(raw, encoding="utf-8")
+
+            # Save raw response only when debugging
+            if DEBUG_ON:
+                (DEBUG_DIR / f"orders_{sheet_id}_{re.sub(r'[^a-z0-9]', '_', label)}.json"
+                 ).write_text(raw, encoding="utf-8")
 
             trace(f"Response {r.status_code}", {"preview": raw[:600]})
 
@@ -658,7 +653,6 @@ def main():
         "loadsheets":  [],
     }
 
-    # Browser session: login + intercept + click + capture real IDs
     matched_rows, proxy_session = run_browser_session()
 
     trace(f"{len(matched_rows)} row(s) matched for {TARGET_LABEL}")
@@ -689,7 +683,6 @@ def main():
         )
         row["api_result"] = result
         
-        # Extract summary from orders data
         summary = extract_summary_from_orders(result.get("data"))
         row["summary"] = summary
         
