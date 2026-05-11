@@ -74,6 +74,12 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 
 # ────────────────────────────────────────────────────────────────……[...]
+# Configuration
+# ────────────────────────────────────────────────────────────────……[...]
+
+SAVE_ONLY_LOADSHEET_SUMMARY = True  # Set to True to save only summary, False to save all data
+
+# ────────────────────────────────────────────────────────────────……[...]
 # Logging
 # ────────────────────────────────────────────────────────────────……[...]
 
@@ -136,7 +142,7 @@ TARGET_YEAR  = TARGET_DATE.year
 TARGET_LABEL = f"{TARGET_MONTH} {TARGET_DAY}, {TARGET_YEAR}"
 OUTPUT_FILE  = OUTPUT_DIR / f"loadsheet_{DATE_TAG}.json"
 
-trace("Config", {"target": TARGET_LABEL, "output": str(OUTPUT_FILE)})
+trace("Config", {"target": TARGET_LABEL, "output": str(OUTPUT_FILE), "save_only_summary": SAVE_ONLY_LOADSHEET_SUMMARY})
 
 
 # ────────────────────────────────────────────────────────────────…[...]
@@ -189,7 +195,7 @@ def matches_target_date(text):
 def extract_summary_from_orders(orders_data):
     """
     Extract summary from orders API response:
-    - total_order_count: count of all orders
+    - total_orders: count of all orders
     - total_invoice_payment: sum of all invoicePayment values
     - order_ref_numbers: array of all orderRefNumber values
     """
@@ -226,6 +232,21 @@ def extract_summary_from_orders(orders_data):
     except Exception as e:
         log.exception("Error extracting summary from orders")
         return None
+
+
+def prepare_loadsheet_output(row):
+    """
+    Prepare loadsheet row for output based on SAVE_ONLY_LOADSHEET_SUMMARY setting.
+    If True: only include loadsheet_number and summary
+    If False: include all data
+    """
+    if SAVE_ONLY_LOADSHEET_SUMMARY:
+        return {
+            "loadsheet_number": row.get("loadsheet_number"),
+            "summary": row.get("summary"),
+        }
+    else:
+        return row
 
 
 # ────────────────────────────────────────────────────────────────…[...]
@@ -627,7 +648,7 @@ def fetch_orders(session, sheet_id, order_api_url=None, row_status="COMPLETED"):
 
 # ────────────────────────────────────────────────────────────────…[...]
 # Main
-# ─────────────────────────────────────────��──────────────────────…[...]
+# ────────────────────────────────────────────────────────────────…[...]
 
 def main():
     trace("SCRAPER v5 STARTED", {"target": TARGET_LABEL})
@@ -658,7 +679,7 @@ def main():
             trace("Skipping — no sheet_id")
             row["api_result"] = {"error": "no sheet_id"}
             row["summary"] = None
-            final["loadsheets"].append(row)
+            final["loadsheets"].append(prepare_loadsheet_output(row))
             continue
 
         result = fetch_orders(
@@ -676,13 +697,14 @@ def main():
         if summary:
             trace(f"Loadsheet {row['loadsheet_number']} Summary", summary)
         
-        final["loadsheets"].append(row)
+        final["loadsheets"].append(prepare_loadsheet_output(row))
 
     write_json(OUTPUT_FILE, final)
     trace("DONE", {
         "rows":   len(matched_rows),
         "saved":  len(final["loadsheets"]),
         "output": str(OUTPUT_FILE),
+        "save_only_summary": SAVE_ONLY_LOADSHEET_SUMMARY,
     })
 
 
