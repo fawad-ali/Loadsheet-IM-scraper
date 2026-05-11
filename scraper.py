@@ -64,6 +64,7 @@ import json
 import time
 import logging
 import traceback
+from decimal import Decimal
 
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -183,6 +184,48 @@ def matches_target_date(text):
         month, day_s, year_s = m.groups()
         return month == TARGET_MONTH and int(day_s) == TARGET_DAY and int(year_s) == TARGET_YEAR
     return False
+
+
+def extract_summary_from_orders(orders_data):
+    """
+    Extract summary from orders API response:
+    - total_order_count: count of all orders
+    - total_invoice_payment: sum of all invoicePayment values
+    - order_ref_numbers: array of all orderRefNumber values
+    """
+    try:
+        if not isinstance(orders_data, dict):
+            return None
+        
+        dist = orders_data.get("dist", [])
+        if not isinstance(dist, list):
+            return None
+        
+        total_orders = len(dist)
+        total_invoice = Decimal("0.00")
+        order_refs = []
+        
+        for order in dist:
+            # Sum invoice payments
+            invoice_payment = order.get("invoicePayment", "0.00")
+            try:
+                total_invoice += Decimal(str(invoice_payment))
+            except Exception:
+                pass
+            
+            # Collect order ref numbers
+            order_ref = order.get("orderRefNumber")
+            if order_ref:
+                order_refs.append(order_ref)
+        
+        return {
+            "total_orders": total_orders,
+            "total_invoice_payment": str(total_invoice),
+            "order_ref_numbers": order_refs,
+        }
+    except Exception as e:
+        log.exception("Error extracting summary from orders")
+        return None
 
 
 # ────────────────────────────────────────────────────────────────…[...]
@@ -584,7 +627,7 @@ def fetch_orders(session, sheet_id, order_api_url=None, row_status="COMPLETED"):
 
 # ────────────────────────────────────────────────────────────────…[...]
 # Main
-# ────────────────────────────────────────────────────────────────…[...]
+# ─────────────────────────────────────────��──────────────────────…[...]
 
 def main():
     trace("SCRAPER v5 STARTED", {"target": TARGET_LABEL})
@@ -614,6 +657,7 @@ def main():
         if not sheet_id:
             trace("Skipping — no sheet_id")
             row["api_result"] = {"error": "no sheet_id"}
+            row["summary"] = None
             final["loadsheets"].append(row)
             continue
 
@@ -624,6 +668,14 @@ def main():
             row_status    = row_status,
         )
         row["api_result"] = result
+        
+        # Extract summary from orders data
+        summary = extract_summary_from_orders(result.get("data"))
+        row["summary"] = summary
+        
+        if summary:
+            trace(f"Loadsheet {row['loadsheet_number']} Summary", summary)
+        
         final["loadsheets"].append(row)
 
     write_json(OUTPUT_FILE, final)
