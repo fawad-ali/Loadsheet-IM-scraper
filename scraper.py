@@ -88,11 +88,19 @@ DEBUG_DIR.mkdir(exist_ok=True)
 # Date
 # ─────────────────────────────────────────────────────────────────────────────
 
-DATE_OVERRIDE = os.environ.get("DATE_OVERRIDE")
-if DATE_OVERRIDE:
-    TARGET_DATE = datetime.strptime(DATE_OVERRIDE, "%Y-%m-%d")
+# TESTING MODE
+# True  = always scrape 8 May 2026
+# False = scrape yesterday's date automatically
+TESTING_ON = True
+
+if TESTING_ON:
+    TARGET_DATE = datetime(2026, 5, 8)
 else:
-    TARGET_DATE = datetime.now() - timedelta(days=1)
+    DATE_OVERRIDE = os.environ.get("DATE_OVERRIDE")
+    if DATE_OVERRIDE:
+        TARGET_DATE = datetime.strptime(DATE_OVERRIDE, "%Y-%m-%d")
+    else:
+        TARGET_DATE = datetime.now() - timedelta(days=1)
 
 DATE_TAG     = TARGET_DATE.strftime("%Y-%m-%d")
 TARGET_MONTH = TARGET_DATE.strftime("%b")
@@ -238,14 +246,12 @@ def browser_login_and_discover():
         # ── Navigate to loadsheet page and wait ───────────────────────────────
         trace("Navigating to loadsheet page (with proxy active)")
         page.goto(LOADSHEET_URL, wait_until="networkidle")
-        time.sleep(5)  # let Angular settle
+        time.sleep(5)
 
         screenshot(page, "03_loadsheet")
         trace(f"Total intercepted URLs so far: {len(all_urls)}")
 
-        # ── If we still haven't seen a load-sheet call, trigger it manually ──
-        # Use page.evaluate to fire fetch() from inside Angular's context
-        # This uses the browser's own cookies/headers
+        # ── Manual trigger ───────────────────────────────────────────────────
         ls_trigger_result = page.evaluate(f"""
             async () => {{
                 try {{
@@ -265,7 +271,7 @@ def browser_login_and_discover():
                 }}
             }}
         """)
-        trace("Manual fetch (load-sheet-logs/{merchantId}) result", ls_trigger_result)
+        trace("Manual fetch result", ls_trigger_result)
 
         browser.close()
 
@@ -290,293 +296,3 @@ def _make_session(token, cookies):
     for c in cookies:
         s.cookies.set(c["name"], c["value"], domain=c.get("domain"))
     return s
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 2: Find the loadsheet list endpoint via brute-force discovery
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Every plausible path for the loadsheet list, based on:
-#   - The page URL: /main/load-sheet-logs
-#   - The known working order URL: /load-sheet/{id}/order
-#   - Common REST patterns
-
-CANDIDATE_LIST_PATHS = [
-    # From page name "load-sheet-logs"
-    "/load-sheet-logs/{merchantId}",
-    "/load-sheet-logs?merchantId={merchantId}",
-    "/load-sheet-logs",
-    # Variations
-    "/load-sheet/logs/{merchantId}",
-    "/load-sheet/logs?merchantId={merchantId}",
-    "/load-sheet/merchant/{merchantId}",
-    "/load-sheet?merchantId={merchantId}&page=0&size=20&direction=desc",
-    "/load-sheet/{merchantId}",
-    # With filters
-    "/load-sheet-logs/{merchantId}?page=0&size=20&direction=desc",
-    "/load-sheet-logs/{merchantId}?page=0&size=20",
-    # Alternate naming
-    "/loadsheet-logs/{merchantId}",
-    "/loadsheet/merchant/{merchantId}",
-    "/loadsheet-log/{merchantId}",
-    "/load-sheet/log/{merchantId}",
-    # With date filter
-    "/load-sheet-logs/{merchantId}?fromDate={date}&toDate={date}",
-    "/load-sheet-logs?merchantId={merchantId}&fromDate={date}&toDate={date}",
-]
-
-
-def discover_list_endpoint(session, merchant_id):
-    """
-    Try every candidate path until one returns a 200 with loadsheet data.
-    Returns (url, response_json) of the first success.
-    """
-    date_str = TARGET_DATE.strftime("%Y-%m-%d")
-
-    for path_template in CANDIDATE_LIST_PATHS:
-        path = (path_template
-                .replace("{merchantId}", merchant_id)
-                .replace("{date}", date_str))
-        url = f"{API_ROOT}{path}"
-
-        trace(f"Trying list endpoint: {url}")
-        try:
-            r = session.get(url, timeout=20)
-            raw = r.text
-            safe = re.sub(r"[^a-zA-Z0-9._-]", "_", url)[:100]
-            (DEBUG_DIR / f"discover_{safe}.txt").write_text(raw, encoding="utf-8")
-
-            trace(f"  {r.status_code}", raw[:400])
-
-            if r.status_code == 200:
-                try:
-                    data = r.json()
-                except Exception:
-                    continue
-
-                # Check it actually has loadsheet-like content
-                # (not just a generic 200 success with empty data)
-                raw_lower = raw.lower()
-                if any(k in raw_lower for k in [
-                    "loadsheet", "load_sheet", "load-sheet",
-                    "lds-", "sheetid", "sheet_id",
-                    "totalorders", "total_orders",
-                ]):
-                    trace(f"  ✓ FOUND loadsheet list endpoint!", {"url": url})
-                    return url, data
-
-                # Even without keywords, if it returned a list or paginated
-                # response, it might be it
-                if isinstance(data, list) and len(data) > 0:
-                    trace(f"  ✓ Returned non-empty list", {"url": url})
-                    return url, data
-
-                if isinstance(data, dict):
-                    for k in ["dist", "data", "content", "payload", "result"]:
-                        if k in data and data[k]:
-                            trace(f"  ✓ Returned data under key '{k}'", {"url": url})
-                            return url, data
-
-        except Exception:
-            log.exception(f"  Request failed for {url}")
-
-    return None, None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 3: Parse loadsheet list to find target-date entries
-# ─────────────────────────────────────────────────────────────────────────────
-
-ID_KEYS     = ["id", "loadSheetId", "loadsheetId", "sheetId", "load_sheet_id"]
-DATE_KEYS   = ["createdDate", "date", "loadSheetDate", "createdAt",
-               "created_date", "loadsheetDate", "dateCreated", "createDate"]
-NUM_KEYS    = ["loadSheetNumber", "loadsheetNumber", "number", "trackingNumber"]
-STATUS_KEYS = ["status", "loadSheetStatus", "loadsheetStatus"]
-ORDER_KEYS  = ["totalOrders", "ordersCount", "total", "orderCount", "orders"]
-
-
-def first_val(d, keys, default=None):
-    for k in keys:
-        if k in d:
-            return d[k]
-    return default
-
-
-def parse_list_response(api_response):
-    trace("Parsing list response", api_response)
-
-    # Unwrap envelope
-    items = []
-    if isinstance(api_response, list):
-        items = api_response
-    elif isinstance(api_response, dict):
-        for key in ["dist", "data", "payload", "content",
-                    "loadSheets", "loadsheets", "result", "items"]:
-            if key in api_response and isinstance(api_response[key], list):
-                items = api_response[key]
-                trace(f"Unwrapped from '{key}'", {"count": len(items)})
-                break
-        if not items and ("id" in api_response or "loadSheetId" in api_response):
-            items = [api_response]
-
-    trace(f"Total items: {len(items)}")
-
-    matched = []
-    for item in items:
-        date_val = first_val(item, DATE_KEYS)
-        if not matches_target_date(date_val):
-            trace("Date mismatch", {
-                "date": date_val,
-                "id":   first_val(item, ID_KEYS),
-            })
-            continue
-
-        sheet_id = first_val(item, ID_KEYS)
-        matched.append({
-            "real_sheet_id":    str(sheet_id) if sheet_id is not None else None,
-            "loadsheet_number": first_val(item, NUM_KEYS),
-            "status":           str(first_val(item, STATUS_KEYS, "")).upper(),
-            "total_orders":     first_val(item, ORDER_KEYS),
-            "date_text":        str(date_val),
-            "raw_item":         item,
-        })
-        trace("Matched item", matched[-1])
-
-    trace(f"Matched {len(matched)} for {TARGET_LABEL}")
-    return matched
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 4: Fetch orders
-# ─────────────────────────────────────────────────────────────────────────────
-
-STATUS_OPTIONS = {
-    "COMPLETED":  ["delivered", "booked", "return", ""],
-    "DISPATCHED": ["booked", "delivered", ""],
-    "BOOKED":     ["booked", ""],
-    "RETURNED":   ["return", ""],
-    "CANCELLED":  ["cancelled", ""],
-    "":           ["booked", "delivered", "return", ""],
-}
-
-
-def fetch_orders(session, sheet_id, row_status="COMPLETED"):
-    url        = f"{API_ROOT}/load-sheet/{sheet_id}/order"
-    candidates = STATUS_OPTIONS.get(row_status, ["booked", "delivered", "return", ""])
-
-    for opt in candidates:
-        params = {"loadSheetId": sheet_id, "direction": "desc"}
-        if opt:
-            params["orderStatusOption"] = opt
-
-        trace(f"Orders request", {"sheet_id": sheet_id, "opt": opt, "params": params})
-        try:
-            r   = session.get(url, params=params, timeout=30)
-            raw = r.text
-            (DEBUG_DIR / f"orders_{sheet_id}_{opt or 'nooption'}.json"
-             ).write_text(raw, encoding="utf-8")
-            trace(f"  {r.status_code}", raw[:600])
-
-            try:
-                data = r.json()
-            except Exception:
-                data = {"raw_text": raw}
-
-            if r.status_code == 200:
-                return {"status_option": opt, "status_code": 200,
-                        "url": r.url, "data": data}
-        except Exception:
-            log.exception(f"  Order fetch failed opt={opt!r}")
-
-    return {"status_option": "all_failed", "status_code": None,
-            "url": url, "data": {}}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────────────────────────────────────
-
-def main():
-    trace("SCRAPER v6 STARTED", {"target": TARGET_LABEL})
-
-    final = {
-        "scrape_date": DATE_TAG,
-        "target_date": TARGET_LABEL,
-        "loadsheets":  [],
-    }
-
-    # ── 1. Login + discover intercepted URLs ──────────────────────────────
-    token, merchant_id, cookies, intercepted_urls = browser_login_and_discover()
-
-    session = _make_session(token, cookies)
-
-    # ── 2. Check if any intercepted URL is a loadsheet list call ──────────
-    ls_re = re.compile(r"load.?sheet.?log", re.IGNORECASE)
-    discovered_url  = None
-    discovered_data = None
-
-    for u in intercepted_urls:
-        if ls_re.search(u):
-            trace(f"Load-sheet-logs URL found in intercepts!", u)
-            try:
-                r = session.get(u, timeout=30)
-                if r.status_code == 200:
-                    discovered_url  = u
-                    discovered_data = r.json()
-                    write_json(DEBUG_DIR / "loadsheet_list_raw.json", discovered_data)
-                    trace("List data fetched from intercepted URL", discovered_data)
-                    break
-            except Exception:
-                log.exception(f"Failed to fetch intercepted URL {u}")
-
-    # ── 3. If not found via intercept, brute-force discover ───────────────
-    if not discovered_data:
-        trace("No load-sheet-logs URL in intercepts — running endpoint discovery")
-        discovered_url, discovered_data = discover_list_endpoint(session, merchant_id)
-        if discovered_data:
-            write_json(DEBUG_DIR / "loadsheet_list_raw.json", discovered_data)
-
-    if not discovered_data:
-        trace("FATAL: Could not find loadsheet list endpoint")
-        trace("Check data/debug/ folder for all response files")
-        trace("Look at all_intercepted_urls.json for clues")
-        write_json(OUTPUT_FILE, final)
-        return
-
-    trace(f"List endpoint found: {discovered_url}")
-
-    # ── 4. Parse list + filter to target date ─────────────────────────────
-    matched = parse_list_response(discovered_data)
-
-    if not matched:
-        trace(f"No loadsheets found for {TARGET_LABEL}")
-        trace("Check loadsheet_list_raw.json to see all available dates")
-        write_json(OUTPUT_FILE, final)
-        return
-
-    # ── 5. Fetch orders for each matched sheet ────────────────────────────
-    for sheet in matched:
-        sid    = sheet.get("real_sheet_id")
-        status = sheet.get("status", "COMPLETED")
-
-        trace("Processing", {"sheet_id": sid, "status": status,
-                              "number": sheet.get("loadsheet_number")})
-
-        if not sid:
-            sheet["api_result"] = {"error": "no sheet_id in API response"}
-            final["loadsheets"].append(sheet)
-            continue
-
-        sheet["api_result"] = fetch_orders(session, sid, status)
-        final["loadsheets"].append(sheet)
-
-    # ── 6. Save ───────────────────────────────────────────────────────────
-    write_json(OUTPUT_FILE, final)
-    trace("DONE", {
-        "sheets":  len(final["loadsheets"]),
-        "output":  str(OUTPUT_FILE),
-    })
-
-
-if __name__ == "__main__":
-    main()
