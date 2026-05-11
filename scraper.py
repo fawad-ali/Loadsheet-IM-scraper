@@ -78,6 +78,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 # ────────────────────────────────────────────────────────────────……[...]
 
 SAVE_ONLY_LOADSHEET_SUMMARY = True  # Set to True to save only summary, False to save all data
+TESTING_ON = True # Set to True jo scrapt a specific date data for testing
 
 # ────────────────────────────────────────────────────────────────……[...]
 # Logging
@@ -124,8 +125,6 @@ DEBUG_DIR.mkdir(exist_ok=True)
 # ────────────────────────────────────────────────────────────────…[...]
 # Date
 # ────────────────────────────────────────────────────────────────…[...]
-
-TESTING_ON = True
 
 if TESTING_ON:
     TARGET_DATE = datetime(2026, 5, 9)
