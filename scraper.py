@@ -19,7 +19,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 # ────────────────────────────────────────────────────────────────……[...]
 
 SAVE_ONLY_LOADSHEET_SUMMARY = True   # Set to True to save only summary, False to save all data
-TESTING_ON = True                    # Set to True to scrape a specific date for testing
+TESTING_ON = False                    # Set to True to scrape a specific date for testing
 DEBUG_ON   = False                    # Set to True to enable all logging/screenshots/debug files;
                                      # Set to False for silent production runs
 
