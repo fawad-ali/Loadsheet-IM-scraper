@@ -1,0 +1,1 @@
+{"statusCode":"200","statusMessage":"Success","dist":[{"orderTypeId":1,"orderType":"Normal"},{"orderTypeId":2,"orderType":"Reversed"},{"orderTypeId":3,"orderType":"Replacement"}]}
