@@ -72,9 +72,9 @@ import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────……[...]
 # Logging
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────……[...]
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -97,9 +97,9 @@ def trace(msg, data=None):
         log.debug(f"{prefix} {msg}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────…[...]
 # Config
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────…[...]
 
 BASE_URL      = "https://merchant.postex.pk"
 LOGIN_URL     = f"{BASE_URL}/login"
@@ -114,9 +114,9 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 DEBUG_DIR = OUTPUT_DIR / "debug"
 DEBUG_DIR.mkdir(exist_ok=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────…[...]
 # Date
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────…[...]
 
 TESTING_ON = True
 
@@ -138,9 +138,9 @@ OUTPUT_FILE  = OUTPUT_DIR / f"loadsheet_{DATE_TAG}.json"
 trace("Config", {"target": TARGET_LABEL, "output": str(OUTPUT_FILE)})
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────…[...]
 # Helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────…[...]
 
 def write_json(path, data):
     path.write_text(
@@ -185,9 +185,9 @@ def matches_target_date(text):
     return False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────…[...]
 # Main browser session — intercept ALL api.postex.pk requests
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────…[...]
 
 def run_browser_session():
     """
@@ -344,29 +344,29 @@ def run_browser_session():
 
         # ── Step E: Navigate to loadsheet page ───────────────────────────────
         # Now Angular CAN load because our proxy fulfills all API calls
-page.goto(LOADSHEET_URL, wait_until="networkidle")
+        page.goto(LOADSHEET_URL, wait_until="networkidle")
 
-trace("Waiting for load sheet table to fully appear")
+        trace("Waiting for load sheet table to fully appear")
 
-try:
-    # Wait for table body
-    page.wait_for_selector("table tbody", timeout=60_000)
+        try:
+            # Wait for table body
+            page.wait_for_selector("table tbody", timeout=60_000)
 
-    # Wait until rows actually exist
-    page.wait_for_function("""
-        () => {
-            const rows = document.querySelectorAll('table tbody tr.data-item');
-            return rows.length > 0;
-        }
-    """, timeout=60_000)
+            # Wait until rows actually exist
+            page.wait_for_function("""
+                () => {
+                    const rows = document.querySelectorAll('table tbody tr.data-item');
+                    return rows.length > 0;
+                }
+            """, timeout=60_000)
 
-    trace("Loadsheet table rows appeared")
+            trace("Loadsheet table rows appeared")
 
-except PWTimeout:
-    trace("Timed out waiting for loadsheet table")
+        except PWTimeout:
+            trace("Timed out waiting for loadsheet table")
 
-time.sleep(8)  # extra Angular settle time        
-        dump_html(page,  "03_loadsheet_page")
+        time.sleep(8)  # extra Angular settle time
+        dump_html(page, "03_loadsheet_page")
         screenshot(page, "03_loadsheet_page")
 
         # ── Step F: Find and process rows ────────────────────────────────────
@@ -513,9 +513,9 @@ time.sleep(8)  # extra Angular settle time
     return matched_rows, proxy_session
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────…[...]
 # Fetch orders using the real URL captured from the interceptor
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────…[...]
 
 STATUS_OPTIONS = {
     "COMPLETED":  ["delivered", "booked", "return", ""],
@@ -572,9 +572,9 @@ def fetch_orders(session, sheet_id, order_api_url=None, row_status="COMPLETED"):
     return {"status_option": "all_failed", "status_code": None, "data": {}}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────…[...]
 # Main
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────…[...]
 
 def main():
     trace("SCRAPER v5 STARTED", {"target": TARGET_LABEL})
