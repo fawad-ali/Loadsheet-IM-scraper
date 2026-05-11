@@ -142,7 +142,7 @@ if DEBUG_ON:
 # ────────────────────────────────────────────────────────────────…[...]
 
 if TESTING_ON:
-    TARGET_DATE = datetime(2026, 5, 11)
+    TARGET_DATE = datetime(2026, 5, 9)
 else:
     DATE_OVERRIDE = os.environ.get("DATE_OVERRIDE")
     if DATE_OVERRIDE:
