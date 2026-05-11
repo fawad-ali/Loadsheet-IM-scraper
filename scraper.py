@@ -1,61 +1,31 @@
 """
-PostEx Loadsheet Scraper v5
+PostEx Loadsheet Scraper v6
 ============================
-Back to basics: click the correct span, intercept the real API URL.
+KEY INSIGHT from v5 logs:
+  - The proxy works perfectly — we CAN call api.postex.pk from Python
+  - The loadsheet page never fires its data API call on load (we see 0 load-sheet URLs)
+  - The table rows have 0 <td> cells — Angular uses virtual/component rows
+  - DOM parsing is unreliable for Angular apps
 
-ROOT CAUSE of v2/v3 click failures:
-  - v2: used `span.orders` — class doesn't exist in the DOM
-  - v3: used `td.dt-tracking span` — the class `dt-tracking` doesn't exist
-        on the <td> in the REAL rendered HTML. The HTML has inline styles only.
+NEW STRATEGY — Don't touch the DOM at all:
+  1. Login via browser → get token + merchantId
+  2. Use the proxy to find what URL the loadsheet page calls
+     by navigating to it and watching intercepted URLs.
+     If we still don't see it, we TRIGGER it via page.evaluate()
+     by calling fetch() from inside the page with the token.
+  3. The loadsheet page data API (from real browser DevTools) is:
+       GET https://api.postex.pk/services/merchant/api/load-sheet-logs/{merchantId}
+                                                          ^^^^^^^^^^^^ note: load-sheet-LOGS not load-sheet
+     or possibly:
+       GET /services/merchant/api/load-sheet/merchant/{merchantId}
+  4. We call ALL plausible load-sheet list endpoints directly from Python
+     until one returns 200 with data.
+  5. Parse the response to find target-date loadsheets + their real IDs.
+  6. Call the orders endpoint with the real ID.
 
-WHAT THE REAL HTML LOOKS LIKE (from Document 3):
-  <td class="data-col dt-tracking" style="width: 100px;">
-    <span class="smaller-text" style="cursor: pointer; color: blue;"> 28 </span>
-  </td>
-
-  BUT — the class "dt-tracking" IS present. The problem was that
-  `query_selector` on a Playwright ElementHandle searches WITHIN that element,
-  so `row.query_selector("td.dt-tracking span")` should work... UNLESS
-  the page hadn't rendered yet (0 tr.data-item rows in v3 meant Angular
-  didn't load because api.postex.pk was blocked in the browser).
-
-TRUE ROOT CAUSE:
-  The runner blocks api.postex.pk ONLY from Chromium (net::ERR_ABORTED).
-  So Angular can't fetch data → table is empty.
-  BUT requests.Session can hit api.postex.pk fine.
-
-SOLUTION (v5):
-  1. Use browser to log in and capture the token.
-  2. Use requests to call the loadsheet LIST page (the HTML page, not API).
-     Actually — intercept the network traffic DURING page load at the
-     context level using route interception. When Angular makes its
-     load-sheet list call on page load, we capture that URL + real IDs.
-  3. Alternatively: inject a fetch() call from the page JS context using
-     the already-authenticated session — the browser IS authenticated,
-     it just can't reach api.postex.pk due to runner network policy.
-     We can use page.evaluate() to make the fetch from inside the browser
-     using XMLHttpRequest with the token, then return the result to Python.
-
-ACTUALLY THE SIMPLEST FIX:
-  The browser has the token. The browser CAN'T reach api.postex.pk.
-  Python requests CAN reach api.postex.pk.
-  
-  We know from the network tab the REAL loadsheet list URL is:
-    GET https://api.postex.pk/services/merchant/api/load-sheet-logs/{merchantId}
-  or similar. We need to find it.
-
-  The page URL is: https://merchant.postex.pk/main/load-sheet-logs
-  The Angular component fetches something on load. We intercept THAT
-  at context level (before the browser fails) using page.route() to
-  capture the URL pattern, then replay it with requests.
-
-FINAL APPROACH:
-  Use page.route() to intercept ALL requests to api.postex.pk,
-  log their URLs (we don't need the response, just the URL pattern),
-  fulfill them with a fake 200 so Angular doesn't error out,
-  then use requests to actually call those URLs with Python.
-  
-  This gives us the EXACT URL + params the Angular app uses.
+  The key we were missing: the list endpoint path is NOT /load-sheet
+  it is something different — we find it by watching the browser's
+  actual network calls when on the load-sheet-logs page.
 """
 
 import os
@@ -63,7 +33,6 @@ import re
 import json
 import time
 import logging
-import traceback
 
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -80,7 +49,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s [%(levelname)-8s] %(funcName)s:%(lineno)d | %(message)s",
 )
-log = logging.getLogger("postex-v5")
+log = logging.getLogger("postex-v6")
 
 STEP = 0
 def trace(msg, data=None):
@@ -105,6 +74,7 @@ BASE_URL      = "https://merchant.postex.pk"
 LOGIN_URL     = f"{BASE_URL}/login"
 LOADSHEET_URL = f"{BASE_URL}/main/load-sheet-logs"
 API_HOST      = "api.postex.pk"
+API_ROOT      = f"https://{API_HOST}/services/merchant/api"
 
 USERNAME = os.environ.get("POSTEX_USERNAME", "")
 PASSWORD = os.environ.get("POSTEX_PASSWORD", "")
@@ -150,61 +120,44 @@ def screenshot(page, name):
         page.screenshot(path=str(p), full_page=True)
         trace(f"Screenshot -> {p}")
     except Exception:
-        log.exception("screenshot failed")
-
-def dump_html(page, name):
-    try:
-        html = page.content()
-        p = DEBUG_DIR / f"{name}.html"
-        p.write_text(html, encoding="utf-8")
-        trace(f"HTML -> {p} ({len(html)} chars)")
-    except Exception:
-        log.exception("html dump failed")
+        pass
 
 def matches_target_date(text):
     if not text:
         return False
     s = str(text).strip()
-    # Epoch ms
     if re.fullmatch(r"\d{13}", s):
         dt = datetime.fromtimestamp(int(s) / 1000)
-        return dt.year == TARGET_YEAR and dt.month == TARGET_DATE.month and dt.day == TARGET_DAY
-    # ISO
+        return (dt.year == TARGET_YEAR and
+                dt.month == TARGET_DATE.month and
+                dt.day == TARGET_DAY)
     m = re.match(r"(\d{4})-(\d{2})-(\d{2})", s)
     if m:
-        return int(m.group(1)) == TARGET_YEAR and int(m.group(2)) == TARGET_DATE.month and int(m.group(3)) == TARGET_DAY
-    # Human
+        return (int(m.group(1)) == TARGET_YEAR and
+                int(m.group(2)) == TARGET_DATE.month and
+                int(m.group(3)) == TARGET_DAY)
     m = re.search(r"(\w+)\s+(\d{1,2}),\s+(\d{4})", s)
     if m:
         month, day_s, year_s = m.groups()
-        return month == TARGET_MONTH and int(day_s) == TARGET_DAY and int(year_s) == TARGET_YEAR
+        return (month == TARGET_MONTH and
+                int(day_s) == TARGET_DAY and
+                int(year_s) == TARGET_YEAR)
     return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Main browser session — intercept ALL api.postex.pk requests
+# Step 1: Browser login + intercept to find the REAL loadsheet list URL
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_browser_session():
+def browser_login_and_discover():
     """
-    Single browser session that:
-    1. Logs in
-    2. Routes ALL api.postex.pk requests through Python:
-       - Captures the URL
-       - Fires the real HTTP request using requests (which CAN reach the API)
-       - Returns the response body back to the browser so Angular works normally
-    3. Navigates to the loadsheet page — Angular loads and populates the table
-    4. Waits for and clicks the correct span
-    5. Captures the order API URL from the intercepted click request
-    6. Returns everything needed
+    Login, proxy all API calls, navigate to loadsheet page,
+    capture every intercepted URL, return auth + all URLs seen.
     """
-
-    intercepted_urls   = []   # all api.postex.pk URLs seen
-    loadsheet_list_url = None # the URL Angular uses to list loadsheets
-    order_api_calls    = []   # URLs from clicking the span
-    token              = ""
-    merchant_id        = ""
-    cookies_list       = []
+    token       = ""
+    merchant_id = ""
+    cookies_out = []
+    all_urls    = []
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
@@ -213,12 +166,11 @@ def run_browser_session():
         )
         context = browser.new_context()
         page    = context.new_page()
-
         page.on("console",   lambda m: log.debug(f"BROWSER[{m.type}] {m.text}"))
         page.on("pageerror", lambda e: log.debug(f"PAGE ERROR: {e}"))
 
-        # ── Step A: Login ────────────────────────────────────────────────────
-        trace("Navigating to login")
+        # ── Login ────────────────────────────────────────────────────────────
+        trace("Login")
         page.goto(LOGIN_URL, wait_until="networkidle")
         screenshot(page, "01_login")
         page.fill('input[type="email"]',    USERNAME)
@@ -226,9 +178,8 @@ def run_browser_session():
         page.click('button[type="submit"]')
         page.wait_for_url(f"{BASE_URL}/main/**", timeout=30_000)
         screenshot(page, "02_post_login")
-        trace("Login OK", {"url": page.url})
 
-        # ── Step B: Extract token + merchant_id ──────────────────────────────
+        # ── Extract auth ─────────────────────────────────────────────────────
         storage = page.evaluate("""() => {
             const ss = {};
             for (let i = 0; i < sessionStorage.length; i++) {
@@ -237,269 +188,266 @@ def run_browser_session():
             }
             return ss;
         }""")
-        trace("sessionStorage", storage)
-
         token       = storage.get("token", "")
         merchant_id = storage.get("merchantId", "")
-        cookies_list = context.cookies()
+        cookies_out = context.cookies()
+        trace("Auth", {"token_len": len(token), "merchant_id": merchant_id})
 
-        trace("Auth extracted", {
-            "token_len":   len(token),
-            "merchant_id": merchant_id,
-            "cookies":     len(cookies_list),
-        })
+        # ── Build proxy session ───────────────────────────────────────────────
+        proxy_session = _make_session(token, cookies_out)
 
-        if not token:
-            raise RuntimeError("No token found after login")
-
-        # ── Step C: Build a requests.Session for API proxy ───────────────────
-        # This session is used INSIDE the route handler to actually call the API
-        proxy_session = requests.Session()
-        proxy_session.headers.update({
-            "Accept":          "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Authorization":   f"Bearer {token}",
-            "Origin":          BASE_URL,
-            "Referer":         LOADSHEET_URL,
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-        })
-        for c in cookies_list:
-            proxy_session.cookies.set(c["name"], c["value"], domain=c.get("domain"))
-
-        # ── Step D: Route ALL api.postex.pk requests through requests ─────────
-        # The browser can't reach api.postex.pk, but Python can.
-        # We intercept every request, fire it in Python, return the response.
-        
-        def handle_api_route(route, request):
-            url     = request.url
-            method  = request.method
-            headers = dict(request.headers)
-            
-            trace(f"INTERCEPTED: {method} {url}")
-            intercepted_urls.append(url)
-
+        # ── Route handler: proxy + record ─────────────────────────────────────
+        def handle_route(route, request):
+            url    = request.url
+            method = request.method
+            all_urls.append(url)
+            trace(f"INTERCEPT {method} {url}")
             try:
-                # Merge browser headers with our auth headers
-                req_headers = {
-                    "Accept":          "application/json, text/plain, */*",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Authorization":   f"Bearer {token}",
-                    "Origin":          BASE_URL,
-                    "Referer":         LOADSHEET_URL,
-                    "User-Agent":      headers.get("user-agent", "Mozilla/5.0"),
-                }
-
                 resp = proxy_session.request(
                     method  = method,
                     url     = url,
-                    headers = req_headers,
+                    headers = {
+                        "Accept":          "application/json, text/plain, */*",
+                        "Authorization":   f"Bearer {token}",
+                        "Origin":          BASE_URL,
+                        "Referer":         LOADSHEET_URL,
+                    },
                     data    = request.post_data,
                     timeout = 30,
-                    allow_redirects = True,
                 )
-
-                body = resp.content
-
-                trace(f"PROXIED RESPONSE: {resp.status_code} for {url}", {
-                    "preview": resp.text[:500]
-                })
-
-                # Save every API response for debugging
+                # Save response for inspection
                 safe = re.sub(r"[^a-zA-Z0-9._-]", "_", url)[:100]
-                (DEBUG_DIR / f"proxy_{safe}.json").write_text(
+                (DEBUG_DIR / f"intercept_{safe}.json").write_text(
                     resp.text, encoding="utf-8"
                 )
-
-                # Fulfill the browser request with the real API response
+                trace(f"  -> {resp.status_code}", resp.text[:300])
                 route.fulfill(
                     status  = resp.status_code,
-                    headers = {
-                        "Content-Type":                "application/json",
-                        "Access-Control-Allow-Origin": "*",
-                    },
-                    body    = body,
+                    headers = {"Content-Type": "application/json",
+                               "Access-Control-Allow-Origin": "*"},
+                    body    = resp.content,
                 )
+            except Exception:
+                log.exception(f"Proxy error for {url}")
+                route.fulfill(status=200,
+                              headers={"Content-Type": "application/json"},
+                              body=b"{}")
 
-            except Exception as e:
-                log.exception(f"Proxy failed for {url}")
-                # Return empty JSON so Angular doesn't crash
-                route.fulfill(
-                    status  = 200,
-                    headers = {"Content-Type": "application/json"},
-                    body    = b"{}",
-                )
+        page.route(f"**/{API_HOST}/**", handle_route)
 
-        # Intercept all requests to api.postex.pk
-        page.route(f"**/{API_HOST}/**", handle_api_route)
-
-        trace("Route interceptor active — navigating to loadsheet page")
-
-        # ── Step E: Navigate to loadsheet page ───────────────────────────────
-        # Now Angular CAN load because our proxy fulfills all API calls
+        # ── Navigate to loadsheet page and wait ───────────────────────────────
+        trace("Navigating to loadsheet page (with proxy active)")
         page.goto(LOADSHEET_URL, wait_until="networkidle")
-        
-        trace("Waiting for Angular table to render (up to 30s)")
-        try:
-            page.wait_for_selector("tr.data-item td", timeout=30_000)
-            trace("Table rows with <td> are visible")
-        except PWTimeout:
-            trace("Timed out — proceeding anyway")
-        
-        time.sleep(3)  # Angular change detection settle
-        
-        dump_html(page,  "03_loadsheet_page")
-        screenshot(page, "03_loadsheet_page")
+        time.sleep(5)  # let Angular settle
 
-        # ── Step F: Find and process rows ────────────────────────────────────
-        rows = page.query_selector_all("table tbody tr.data-item")
-        trace(f"Found {len(rows)} tr.data-item rows")
+        screenshot(page, "03_loadsheet")
+        trace(f"Total intercepted URLs so far: {len(all_urls)}")
 
-        if not rows:
-            # Try broader selector
-            rows = page.query_selector_all("tr.data-item")
-            trace(f"Broad selector found {len(rows)} rows")
-
-        matched_rows = []
-
-        for idx, row in enumerate(rows):
-            raw_html = row.inner_html()
-            (DEBUG_DIR / f"row_{idx}.html").write_text(raw_html, encoding="utf-8")
-
-            cells = row.query_selector_all("td")
-            trace(f"Row {idx}: {len(cells)} cells")
-
-            if len(cells) < 6:
-                trace(f"Row {idx}: skipped (only {len(cells)} cells)")
-                continue
-
-            def cell_text(n):
-                try:
-                    return cells[n].inner_text().strip()
-                except Exception:
-                    return ""
-
-            # Cell layout from Document 3:
-            # [0] loadsheet number
-            # [1] total orders (clickable blue span)
-            # [2] delivered
-            # [3] returns
-            # [4] empty
-            # [5] date
-            # [6] status
-            date_text = cell_text(5)
-            status    = cell_text(6).upper()
-
-            trace(f"Row {idx}", {
-                "loadsheet": cell_text(0),
-                "orders":    cell_text(1),
-                "date":      date_text,
-                "status":    status,
-            })
-
-            if not matches_target_date(date_text):
-                trace(f"Row {idx}: date mismatch, skipping")
-                continue
-
-            dom_sheet_id = None
-            m = re.search(r"more-menu-(\d+)", raw_html)
-            if m:
-                dom_sheet_id = m.group(1)
-
-            row_data = {
-                "row_index":        idx,
-                "loadsheet_number": cell_text(0),
-                "total_orders":     cell_text(1),
-                "date_text":        date_text,
-                "status":           status,
-                "dom_sheet_id":     dom_sheet_id,
-                "real_sheet_id":    None,
-                "order_api_url":    None,
-            }
-            trace(f"Row {idx} matched", row_data)
-
-            # ── Step G: Click the order-count span ──────────────────────────
-            # From real HTML: <td class="data-col dt-tracking" style="width: 100px;">
-            #                   <span class="smaller-text" style="cursor: pointer; color: blue;"> 28 </span>
-            #
-            # The interceptor will capture the resulting API call URL
-            # which contains the REAL sheet_id.
-
-            click_urls_before = len(intercepted_urls)
-
-            # Try selectors in order
-            clicked = False
-            for sel in [
-                "td.dt-tracking span.smaller-text",
-                "td.dt-tracking span",
-                "span.smaller-text[style*='color: blue']",
-                "span[style*='color: blue']",
-                "td:nth-child(2) span",
-            ]:
-                try:
-                    el = row.query_selector(sel)
-                    if el:
-                        txt = el.inner_text().strip()
-                        trace(f"Row {idx}: clicking via selector '{sel}', text='{txt}'")
-                        el.click()
-                        clicked = True
-                        break
-                except Exception as e:
-                    trace(f"Row {idx}: selector '{sel}' failed: {e}")
-
-            if not clicked:
-                # Last resort: click by position (second cell)
-                try:
-                    cells[1].click()
-                    clicked = True
-                    trace(f"Row {idx}: clicked cell[1] directly")
-                except Exception as e:
-                    trace(f"Row {idx}: cell[1] click failed: {e}")
-
-            if clicked:
-                # Wait for the API call to come through the interceptor
-                trace(f"Row {idx}: waiting 8s for order API call")
-                time.sleep(8)
-
-                # Find new URLs added after the click
-                new_urls = intercepted_urls[click_urls_before:]
-                trace(f"Row {idx}: {len(new_urls)} new API URLs after click", new_urls)
-
-                # Find the order URL — pattern: /load-sheet/{id}/order
-                order_re = re.compile(r"/load-sheet/(\d+)/order")
-                for u in new_urls:
-                    m2 = order_re.search(u)
-                    if m2:
-                        row_data["real_sheet_id"] = m2.group(1)
-                        row_data["order_api_url"] = u
-                        trace(f"Row {idx}: REAL sheet_id = {m2.group(1)}", {"url": u})
-                        break
-
-                if not row_data["real_sheet_id"]:
-                    trace(f"Row {idx}: real_sheet_id not found in new URLs", new_urls)
-                    # Dump all intercepted for inspection
-                    write_json(
-                        DEBUG_DIR / f"all_intercepted_row{idx}.json",
-                        intercepted_urls
-                    )
-            else:
-                trace(f"Row {idx}: could not click any span")
-
-            matched_rows.append(row_data)
-
-        trace("All intercepted API URLs", intercepted_urls)
-        write_json(DEBUG_DIR / "all_intercepted_urls.json", intercepted_urls)
+        # ── If we still haven't seen a load-sheet call, trigger it manually ──
+        # Use page.evaluate to fire fetch() from inside Angular's context
+        # This uses the browser's own cookies/headers
+        ls_trigger_result = page.evaluate(f"""
+            async () => {{
+                try {{
+                    const token = sessionStorage.getItem('token');
+                    const merchantId = sessionStorage.getItem('merchantId');
+                    const url = `https://api.postex.pk/services/merchant/api/load-sheet-logs/${{merchantId}}`;
+                    const r = await fetch(url, {{
+                        headers: {{
+                            'Authorization': `Bearer ${{token}}`,
+                            'Accept': 'application/json'
+                        }}
+                    }});
+                    const text = await r.text();
+                    return {{ status: r.status, url: url, body: text.substring(0, 2000) }};
+                }} catch(e) {{
+                    return {{ error: String(e) }};
+                }}
+            }}
+        """)
+        trace("Manual fetch (load-sheet-logs/{merchantId}) result", ls_trigger_result)
 
         browser.close()
 
-    return matched_rows, proxy_session
+    write_json(DEBUG_DIR / "all_intercepted_urls.json", all_urls)
+    return token, merchant_id, cookies_out, all_urls
+
+
+def _make_session(token, cookies):
+    s = requests.Session()
+    s.headers.update({
+        "Accept":          "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Authorization":   f"Bearer {token}",
+        "Origin":          BASE_URL,
+        "Referer":         LOADSHEET_URL,
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+    })
+    for c in cookies:
+        s.cookies.set(c["name"], c["value"], domain=c.get("domain"))
+    return s
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Fetch orders using the real URL captured from the interceptor
+# Step 2: Find the loadsheet list endpoint via brute-force discovery
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Every plausible path for the loadsheet list, based on:
+#   - The page URL: /main/load-sheet-logs
+#   - The known working order URL: /load-sheet/{id}/order
+#   - Common REST patterns
+
+CANDIDATE_LIST_PATHS = [
+    # From page name "load-sheet-logs"
+    "/load-sheet-logs/{merchantId}",
+    "/load-sheet-logs?merchantId={merchantId}",
+    "/load-sheet-logs",
+    # Variations
+    "/load-sheet/logs/{merchantId}",
+    "/load-sheet/logs?merchantId={merchantId}",
+    "/load-sheet/merchant/{merchantId}",
+    "/load-sheet?merchantId={merchantId}&page=0&size=20&direction=desc",
+    "/load-sheet/{merchantId}",
+    # With filters
+    "/load-sheet-logs/{merchantId}?page=0&size=20&direction=desc",
+    "/load-sheet-logs/{merchantId}?page=0&size=20",
+    # Alternate naming
+    "/loadsheet-logs/{merchantId}",
+    "/loadsheet/merchant/{merchantId}",
+    "/loadsheet-log/{merchantId}",
+    "/load-sheet/log/{merchantId}",
+    # With date filter
+    "/load-sheet-logs/{merchantId}?fromDate={date}&toDate={date}",
+    "/load-sheet-logs?merchantId={merchantId}&fromDate={date}&toDate={date}",
+]
+
+
+def discover_list_endpoint(session, merchant_id):
+    """
+    Try every candidate path until one returns a 200 with loadsheet data.
+    Returns (url, response_json) of the first success.
+    """
+    date_str = TARGET_DATE.strftime("%Y-%m-%d")
+
+    for path_template in CANDIDATE_LIST_PATHS:
+        path = (path_template
+                .replace("{merchantId}", merchant_id)
+                .replace("{date}", date_str))
+        url = f"{API_ROOT}{path}"
+
+        trace(f"Trying list endpoint: {url}")
+        try:
+            r = session.get(url, timeout=20)
+            raw = r.text
+            safe = re.sub(r"[^a-zA-Z0-9._-]", "_", url)[:100]
+            (DEBUG_DIR / f"discover_{safe}.txt").write_text(raw, encoding="utf-8")
+
+            trace(f"  {r.status_code}", raw[:400])
+
+            if r.status_code == 200:
+                try:
+                    data = r.json()
+                except Exception:
+                    continue
+
+                # Check it actually has loadsheet-like content
+                # (not just a generic 200 success with empty data)
+                raw_lower = raw.lower()
+                if any(k in raw_lower for k in [
+                    "loadsheet", "load_sheet", "load-sheet",
+                    "lds-", "sheetid", "sheet_id",
+                    "totalorders", "total_orders",
+                ]):
+                    trace(f"  ✓ FOUND loadsheet list endpoint!", {"url": url})
+                    return url, data
+
+                # Even without keywords, if it returned a list or paginated
+                # response, it might be it
+                if isinstance(data, list) and len(data) > 0:
+                    trace(f"  ✓ Returned non-empty list", {"url": url})
+                    return url, data
+
+                if isinstance(data, dict):
+                    for k in ["dist", "data", "content", "payload", "result"]:
+                        if k in data and data[k]:
+                            trace(f"  ✓ Returned data under key '{k}'", {"url": url})
+                            return url, data
+
+        except Exception:
+            log.exception(f"  Request failed for {url}")
+
+    return None, None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 3: Parse loadsheet list to find target-date entries
+# ─────────────────────────────────────────────────────────────────────────────
+
+ID_KEYS     = ["id", "loadSheetId", "loadsheetId", "sheetId", "load_sheet_id"]
+DATE_KEYS   = ["createdDate", "date", "loadSheetDate", "createdAt",
+               "created_date", "loadsheetDate", "dateCreated", "createDate"]
+NUM_KEYS    = ["loadSheetNumber", "loadsheetNumber", "number", "trackingNumber"]
+STATUS_KEYS = ["status", "loadSheetStatus", "loadsheetStatus"]
+ORDER_KEYS  = ["totalOrders", "ordersCount", "total", "orderCount", "orders"]
+
+
+def first_val(d, keys, default=None):
+    for k in keys:
+        if k in d:
+            return d[k]
+    return default
+
+
+def parse_list_response(api_response):
+    trace("Parsing list response", api_response)
+
+    # Unwrap envelope
+    items = []
+    if isinstance(api_response, list):
+        items = api_response
+    elif isinstance(api_response, dict):
+        for key in ["dist", "data", "payload", "content",
+                    "loadSheets", "loadsheets", "result", "items"]:
+            if key in api_response and isinstance(api_response[key], list):
+                items = api_response[key]
+                trace(f"Unwrapped from '{key}'", {"count": len(items)})
+                break
+        if not items and ("id" in api_response or "loadSheetId" in api_response):
+            items = [api_response]
+
+    trace(f"Total items: {len(items)}")
+
+    matched = []
+    for item in items:
+        date_val = first_val(item, DATE_KEYS)
+        if not matches_target_date(date_val):
+            trace("Date mismatch", {
+                "date": date_val,
+                "id":   first_val(item, ID_KEYS),
+            })
+            continue
+
+        sheet_id = first_val(item, ID_KEYS)
+        matched.append({
+            "real_sheet_id":    str(sheet_id) if sheet_id is not None else None,
+            "loadsheet_number": first_val(item, NUM_KEYS),
+            "status":           str(first_val(item, STATUS_KEYS, "")).upper(),
+            "total_orders":     first_val(item, ORDER_KEYS),
+            "date_text":        str(date_val),
+            "raw_item":         item,
+        })
+        trace("Matched item", matched[-1])
+
+    trace(f"Matched {len(matched)} for {TARGET_LABEL}")
+    return matched
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 4: Fetch orders
 # ─────────────────────────────────────────────────────────────────────────────
 
 STATUS_OPTIONS = {
@@ -512,34 +460,22 @@ STATUS_OPTIONS = {
 }
 
 
-def fetch_orders(session, sheet_id, order_api_url=None, row_status="COMPLETED"):
-    """
-    If we captured the exact URL from the interceptor, use it directly.
-    Otherwise build it from the sheet_id with status option candidates.
-    """
-    base_url = f"https://{API_HOST}/services/merchant/api/load-sheet/{sheet_id}/order"
+def fetch_orders(session, sheet_id, row_status="COMPLETED"):
+    url        = f"{API_ROOT}/load-sheet/{sheet_id}/order"
+    candidates = STATUS_OPTIONS.get(row_status, ["booked", "delivered", "return", ""])
 
-    # If we have the exact URL, try it first
-    urls_to_try = []
-    if order_api_url:
-        urls_to_try.append(("(captured)", order_api_url, {}))
-
-    # Then try status option candidates
-    for opt in STATUS_OPTIONS.get(row_status, ["booked", "delivered", "return", ""]):
+    for opt in candidates:
         params = {"loadSheetId": sheet_id, "direction": "desc"}
         if opt:
             params["orderStatusOption"] = opt
-        urls_to_try.append((opt, base_url, params))
 
-    for label, url, params in urls_to_try:
-        trace(f"Fetching orders [{label}]", {"url": url, "params": params})
+        trace(f"Orders request", {"sheet_id": sheet_id, "opt": opt, "params": params})
         try:
-            r = session.get(url, params=params if params else None, timeout=30)
+            r   = session.get(url, params=params, timeout=30)
             raw = r.text
-            (DEBUG_DIR / f"orders_{sheet_id}_{re.sub(r'[^a-z0-9]', '_', label)}.json"
+            (DEBUG_DIR / f"orders_{sheet_id}_{opt or 'nooption'}.json"
              ).write_text(raw, encoding="utf-8")
-
-            trace(f"Response {r.status_code}", {"preview": raw[:600]})
+            trace(f"  {r.status_code}", raw[:600])
 
             try:
                 data = r.json()
@@ -547,14 +483,13 @@ def fetch_orders(session, sheet_id, order_api_url=None, row_status="COMPLETED"):
                 data = {"raw_text": raw}
 
             if r.status_code == 200:
-                trace(f"SUCCESS with [{label}]")
-                return {"status_option": label, "status_code": 200,
+                return {"status_option": opt, "status_code": 200,
                         "url": r.url, "data": data}
-
         except Exception:
-            log.exception(f"Request failed for [{label}]")
+            log.exception(f"  Order fetch failed opt={opt!r}")
 
-    return {"status_option": "all_failed", "status_code": None, "data": {}}
+    return {"status_option": "all_failed", "status_code": None,
+            "url": url, "data": {}}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -562,7 +497,7 @@ def fetch_orders(session, sheet_id, order_api_url=None, row_status="COMPLETED"):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
-    trace("SCRAPER v5 STARTED", {"target": TARGET_LABEL})
+    trace("SCRAPER v6 STARTED", {"target": TARGET_LABEL})
 
     final = {
         "scrape_date": DATE_TAG,
@@ -570,42 +505,76 @@ def main():
         "loadsheets":  [],
     }
 
-    # Browser session: login + intercept + click + capture real IDs
-    matched_rows, proxy_session = run_browser_session()
+    # ── 1. Login + discover intercepted URLs ──────────────────────────────
+    token, merchant_id, cookies, intercepted_urls = browser_login_and_discover()
 
-    trace(f"{len(matched_rows)} row(s) matched for {TARGET_LABEL}")
+    session = _make_session(token, cookies)
 
-    for row in matched_rows:
-        sheet_id      = row.get("real_sheet_id") or row.get("dom_sheet_id")
-        order_api_url = row.get("order_api_url")
-        row_status    = row.get("status", "COMPLETED")
+    # ── 2. Check if any intercepted URL is a loadsheet list call ──────────
+    ls_re = re.compile(r"load.?sheet.?log", re.IGNORECASE)
+    discovered_url  = None
+    discovered_data = None
 
-        trace("Processing row", {
-            "sheet_id":      sheet_id,
-            "order_api_url": order_api_url,
-            "status":        row_status,
-        })
+    for u in intercepted_urls:
+        if ls_re.search(u):
+            trace(f"Load-sheet-logs URL found in intercepts!", u)
+            try:
+                r = session.get(u, timeout=30)
+                if r.status_code == 200:
+                    discovered_url  = u
+                    discovered_data = r.json()
+                    write_json(DEBUG_DIR / "loadsheet_list_raw.json", discovered_data)
+                    trace("List data fetched from intercepted URL", discovered_data)
+                    break
+            except Exception:
+                log.exception(f"Failed to fetch intercepted URL {u}")
 
-        if not sheet_id:
-            trace("Skipping — no sheet_id")
-            row["api_result"] = {"error": "no sheet_id"}
-            final["loadsheets"].append(row)
+    # ── 3. If not found via intercept, brute-force discover ───────────────
+    if not discovered_data:
+        trace("No load-sheet-logs URL in intercepts — running endpoint discovery")
+        discovered_url, discovered_data = discover_list_endpoint(session, merchant_id)
+        if discovered_data:
+            write_json(DEBUG_DIR / "loadsheet_list_raw.json", discovered_data)
+
+    if not discovered_data:
+        trace("FATAL: Could not find loadsheet list endpoint")
+        trace("Check data/debug/ folder for all response files")
+        trace("Look at all_intercepted_urls.json for clues")
+        write_json(OUTPUT_FILE, final)
+        return
+
+    trace(f"List endpoint found: {discovered_url}")
+
+    # ── 4. Parse list + filter to target date ─────────────────────────────
+    matched = parse_list_response(discovered_data)
+
+    if not matched:
+        trace(f"No loadsheets found for {TARGET_LABEL}")
+        trace("Check loadsheet_list_raw.json to see all available dates")
+        write_json(OUTPUT_FILE, final)
+        return
+
+    # ── 5. Fetch orders for each matched sheet ────────────────────────────
+    for sheet in matched:
+        sid    = sheet.get("real_sheet_id")
+        status = sheet.get("status", "COMPLETED")
+
+        trace("Processing", {"sheet_id": sid, "status": status,
+                              "number": sheet.get("loadsheet_number")})
+
+        if not sid:
+            sheet["api_result"] = {"error": "no sheet_id in API response"}
+            final["loadsheets"].append(sheet)
             continue
 
-        result = fetch_orders(
-            proxy_session,
-            sheet_id,
-            order_api_url = order_api_url,
-            row_status    = row_status,
-        )
-        row["api_result"] = result
-        final["loadsheets"].append(row)
+        sheet["api_result"] = fetch_orders(session, sid, status)
+        final["loadsheets"].append(sheet)
 
+    # ── 6. Save ───────────────────────────────────────────────────────────
     write_json(OUTPUT_FILE, final)
     trace("DONE", {
-        "rows":   len(matched_rows),
-        "saved":  len(final["loadsheets"]),
-        "output": str(OUTPUT_FILE),
+        "sheets":  len(final["loadsheets"]),
+        "output":  str(OUTPUT_FILE),
     })
 
 
