@@ -14,6 +14,5 @@
   "https://api.postex.pk/services/merchant/api/merchant/alerts",
   "https://api.postex.pk/services/merchant/api/merchant/62247/address?cityId=3&addressTypeIds=2&addressTypeIds=3&addressTypeIds=4",
   "https://api.postex.pk/services/merchant/api/lookup/tax-authority",
-  "https://api.postex.pk/services/merchant/api/permission/user/69526",
-  "https://api.postex.pk/services/merchant/api/load-sheet-logs/62247"
+  "https://api.postex.pk/services/merchant/api/permission/user/69526"
 ]
