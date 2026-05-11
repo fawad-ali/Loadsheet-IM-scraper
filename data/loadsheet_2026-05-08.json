@@ -1,0 +1,32 @@
+{
+  "scrape_date": "2026-05-08",
+  "target_date": "May 8, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-UHUGA454434",
+      "summary": {
+        "total_orders": 17,
+        "total_invoice_payment": "31444.00",
+        "order_ref_numbers": [
+          "IM-41119",
+          "IM-41120",
+          "IM-41155",
+          "IM-41158",
+          "IM-41161",
+          "IM-41168",
+          "IM-41172",
+          "IM-41113",
+          "IM-41114",
+          "IM-41115",
+          "IM-41117",
+          "IM-41118",
+          "IM-41121",
+          "IM-41133",
+          "IM-41138",
+          "IM-41139",
+          "IM-41145"
+        ]
+      }
+    }
+  ]
+}
