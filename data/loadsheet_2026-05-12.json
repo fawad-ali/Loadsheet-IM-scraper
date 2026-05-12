@@ -1,0 +1,38 @@
+{
+  "scrape_date": "2026-05-12",
+  "target_date": "May 12, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-BYKOM962743",
+      "summary": {
+        "total_orders": 23,
+        "total_invoice_payment": "60039.00",
+        "order_ref_numbers": [
+          "IM-41333",
+          "IM-41004",
+          "IM-41150",
+          "IM-41206",
+          "IM-41227",
+          "IM-41234",
+          "IM-41251",
+          "IM-41255",
+          "IM-41266",
+          "IM-41271",
+          "IM-41279",
+          "IM-41284",
+          "IM-41286",
+          "IM-41288",
+          "IM-41289",
+          "IM-41290",
+          "IM-41292",
+          "IM-41295",
+          "IM-41306",
+          "IM-41310",
+          "IM-41312",
+          "IM-41315",
+          "IM-41316"
+        ]
+      }
+    }
+  ]
+}
