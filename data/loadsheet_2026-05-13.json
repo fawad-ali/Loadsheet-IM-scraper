@@ -1,0 +1,33 @@
+{
+  "scrape_date": "2026-05-13",
+  "target_date": "May 13, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-XCLAC918889",
+      "summary": {
+        "total_orders": 18,
+        "total_invoice_payment": "60184.00",
+        "order_ref_numbers": [
+          "IM-40946",
+          "IM-41146",
+          "IM-41165",
+          "IM-41097",
+          "IM-41151",
+          "IM-41217",
+          "IM-41223",
+          "IM-41230",
+          "IM-41281",
+          "IM-41299",
+          "IM-41305",
+          "IM-41317",
+          "IM-41337",
+          "IM-41352",
+          "IM-41354",
+          "IM-41356",
+          "IM-41358",
+          "IM-41367"
+        ]
+      }
+    }
+  ]
+}
