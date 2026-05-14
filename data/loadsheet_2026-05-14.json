@@ -1,0 +1,50 @@
+{
+  "scrape_date": "2026-05-14",
+  "target_date": "May 14, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-VRDSG158394",
+      "summary": {
+        "total_orders": 27,
+        "total_invoice_payment": "66344.00",
+        "order_ref_numbers": [
+          "IM-41314",
+          "IM-41318",
+          "IM-41321",
+          "IM-41331",
+          "IM-41338",
+          "IM-41341",
+          "IM-41350",
+          "IM-41239",
+          "IM-41287",
+          "IM-41291",
+          "IM-41302",
+          "IM-41308",
+          "IM-41309",
+          "IM-41311",
+          "IM-41326",
+          "IM-41335",
+          "IM-41342",
+          "IM-41343",
+          "IM-41379",
+          "IM-41386",
+          "IM-41387",
+          "IM-41391",
+          "IM-41402",
+          "IM-41192",
+          "IM-41221",
+          "IM-41246",
+          "IM-41257"
+        ]
+      }
+    },
+    {
+      "loadsheet_number": "LDS-DY52L522133",
+      "summary": {
+        "total_orders": 0,
+        "total_invoice_payment": "0.00",
+        "order_ref_numbers": []
+      }
+    }
+  ]
+}
