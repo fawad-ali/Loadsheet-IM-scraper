@@ -227,7 +227,7 @@ def extract_summary_from_orders(orders_data):
     Extract summary from orders API response:
     - total_orders: count of all orders
     - total_invoice_payment: sum of all invoicePayment values
-    - order_ref_numbers: array of all orderRefNumber values
+    - order_ref_numbers: array of objects with ref and amount for each order
     """
     try:
         if not isinstance(orders_data, dict):
@@ -249,10 +249,13 @@ def extract_summary_from_orders(orders_data):
             except Exception:
                 pass
             
-            # Collect order ref numbers
+            # Collect order ref numbers with their individual amounts
             order_ref = order.get("orderRefNumber")
             if order_ref:
-                order_refs.append(order_ref)
+                order_refs.append({
+                    "ref": order_ref,
+                    "amount": str(Decimal(str(order.get("invoicePayment", "0.00"))))
+                })
         
         return {
             "total_orders": total_orders,
