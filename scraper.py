@@ -144,7 +144,7 @@ if DEBUG_ON:
 from zoneinfo import ZoneInfo
 
 if TESTING_ON:
-    TARGET_DATE = datetime(2026, 5, 8)
+    TARGET_DATE = datetime(2026, 5, 16)
 else:
     DATE_OVERRIDE = os.environ.get("DATE_OVERRIDE")
 
