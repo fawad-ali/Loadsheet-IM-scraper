@@ -1,0 +1,71 @@
+{
+  "scrape_date": "2026-05-29",
+  "target_date": "May 29, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-VYOFZ259314",
+      "summary": {
+        "total_orders": 14,
+        "total_invoice_payment": "23261.47",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-41800",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-41599",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-41657",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-41681",
+            "amount": "2039.62"
+          },
+          {
+            "ref": "IM-41691",
+            "amount": "2830.63"
+          },
+          {
+            "ref": "IM-41701",
+            "amount": "3360.40"
+          },
+          {
+            "ref": "IM-41708",
+            "amount": "2936.56"
+          },
+          {
+            "ref": "IM-41710",
+            "amount": "3559.72"
+          },
+          {
+            "ref": "IM-41711",
+            "amount": "2550.46"
+          },
+          {
+            "ref": "IM-41716",
+            "amount": "3626.98"
+          },
+          {
+            "ref": "IM-41720",
+            "amount": "414.04"
+          },
+          {
+            "ref": "IM-41721",
+            "amount": "123.00"
+          },
+          {
+            "ref": "IM-41733",
+            "amount": "398.20"
+          },
+          {
+            "ref": "IM-41734",
+            "amount": "1421.86"
+          }
+        ]
+      }
+    }
+  ]
+}
