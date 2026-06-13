@@ -1,0 +1,127 @@
+{
+  "scrape_date": "2026-06-13",
+  "target_date": "Jun 13, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-EAF6G517082",
+      "summary": {
+        "total_orders": 28,
+        "total_invoice_payment": "52374.44",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-42516",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-42014",
+            "amount": "1448.14"
+          },
+          {
+            "ref": "IM-42049",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-42288",
+            "amount": "3818.65"
+          },
+          {
+            "ref": "IM-42290",
+            "amount": "1238.71"
+          },
+          {
+            "ref": "IM-42303",
+            "amount": "847.66"
+          },
+          {
+            "ref": "IM-42306",
+            "amount": "2134.66"
+          },
+          {
+            "ref": "IM-42316",
+            "amount": "713.02"
+          },
+          {
+            "ref": "IM-42205",
+            "amount": "9259.25"
+          },
+          {
+            "ref": "IM-42243",
+            "amount": "3352.00"
+          },
+          {
+            "ref": "IM-41967",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-42258",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-42275",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-42279",
+            "amount": "3567.19"
+          },
+          {
+            "ref": "IM-42281",
+            "amount": "1047.52"
+          },
+          {
+            "ref": "IM-42284",
+            "amount": "4004.77"
+          },
+          {
+            "ref": "IM-42289",
+            "amount": "873.40"
+          },
+          {
+            "ref": "IM-42291",
+            "amount": "503.14"
+          },
+          {
+            "ref": "IM-42297",
+            "amount": "2932.60"
+          },
+          {
+            "ref": "IM-42299",
+            "amount": "2041.60"
+          },
+          {
+            "ref": "IM-42300",
+            "amount": "4470.00"
+          },
+          {
+            "ref": "IM-42302",
+            "amount": "1948.00"
+          },
+          {
+            "ref": "IM-42305",
+            "amount": "391.27"
+          },
+          {
+            "ref": "IM-42308",
+            "amount": "2797.96"
+          },
+          {
+            "ref": "IM-42311",
+            "amount": "597.19"
+          },
+          {
+            "ref": "IM-42322",
+            "amount": "2844.46"
+          },
+          {
+            "ref": "IM-42325",
+            "amount": "987.25"
+          },
+          {
+            "ref": "IM-42467",
+            "amount": "556.00"
+          }
+        ]
+      }
+    }
+  ]
+}
