@@ -6,8 +6,8 @@
 name: PostEx Daily Loadsheet Scraper
 on:
   schedule:
-    #        ┌─ min  ┌─ hour (UTC)  ┌─ day  ┌─ month  ┌─ weekday
-    - cron:  "0 21 * * *"   # 21:00 UTC = 02:00 PKT (UTC+5)
+    - cron:  "0 21 * * *"   # 21:00 UTC = 02:00 PKT – morning
+    - cron:  "0 9 * * *"    # 09:00 UTC = 14:00 PKT – afternoon backup
   # Also allow manual trigger from GitHub UI for testing
   workflow_dispatch:
     inputs:
