@@ -39,7 +39,7 @@ SOLUTION (v5):
 ACTUALLY THE SIMPLEST FIX:
   The browser has the token. The browser CAN'T reach api.postex.pk.
   Python requests CAN reach api.postex.pk.
-  
+
   We know from the network tab the REAL loadsheet list URL is:
     GET https://api.postex.pk/services/merchant/api/load-sheet-logs/{merchantId}
   or similar. We need to find it.
@@ -54,8 +54,25 @@ FINAL APPROACH:
   log their URLs (we don't need the response, just the URL pattern),
   fulfill them with a fake 200 so Angular doesn't error out,
   then use requests to actually call those URLs with Python.
-  
+
   This gives us the EXACT URL + params the Angular app uses.
+
+─────────────────────────────────────────────────────────────────────
+v5.1 RESILIENCE UPDATE (navigation hardening)
+─────────────────────────────────────────────────────────────────────
+  Symptom: `page.goto(..., wait_until="networkidle")` timed out at 30s and
+  killed the whole run; re-running ~18h later worked.
+
+  Two fixes:
+    1. Stop using wait_until="networkidle". This SPA keeps background
+       connections open (polling/analytics + our proxied API calls), so the
+       network rarely goes idle → false timeouts even when the page is fine.
+       We now use "domcontentloaded" and explicitly wait for the elements we
+       actually need afterwards.
+    2. Wrap every navigation in goto_with_retries(): exponential backoff and
+       HTTP 5xx handling, so a short PostEx outage recovers inside the same
+       run instead of failing for the day. (A second scheduled GitHub Actions
+       run in the afternoon is the outer safety net.)
 """
 
 import os
@@ -81,6 +98,10 @@ SAVE_ONLY_LOADSHEET_SUMMARY = True   # Set to True to save only summary, False t
 TESTING_ON = False                    # Set to True to scrape a specific date for testing
 DEBUG_ON   = False                    # Set to True to enable all logging/screenshots/debug files;
                                      # Set to False for silent production runs
+
+# ── Navigation resilience knobs ───────────────────────────────────
+NAV_MAX_ATTEMPTS = 4        # how many times to retry a single page.goto
+NAV_TIMEOUT_MS   = 60_000   # per-attempt navigation timeout (was 30s default)
 
 
 # ────────────────────────────────────────────────────────────────……[...]
@@ -173,6 +194,49 @@ trace("Config", {"target": TARGET_LABEL, "output": str(OUTPUT_FILE), "save_only_
 # Helpers
 # ────────────────────────────────────────────────────────────────…[...]
 
+def goto_with_retries(page, url, max_attempts=NAV_MAX_ATTEMPTS,
+                      timeout_ms=NAV_TIMEOUT_MS, wait_until="domcontentloaded"):
+    """
+    Navigate to `url`, retrying on timeouts, network errors, and HTTP 5xx.
+
+    Why this exists:
+      * "networkidle" is unreliable on this SPA (background connections never
+        let the network go idle) → we use "domcontentloaded" and wait for the
+        real elements afterwards.
+      * If PostEx is briefly down/slow, exponential backoff lets the SAME run
+        recover instead of failing for the whole day.
+
+    Uses print() (not trace) so retry attempts are always visible in the
+    GitHub Actions log, even in production where DEBUG_ON is False.
+    """
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            print(f"[nav] attempt {attempt}/{max_attempts} -> {url}")
+            response = page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+            status = response.status if response is not None else None
+
+            # Site reachable but erroring (PostEx likely having a wobble) → retry
+            if status is not None and status >= 500:
+                raise RuntimeError(f"server returned HTTP {status}")
+
+            print(f"[nav] loaded OK (status={status}) -> {url}")
+            return response
+
+        except Exception as e:
+            last_error = e
+            print(f"[nav] attempt {attempt} failed: {e}")
+            if attempt < max_attempts:
+                backoff = min(60, 10 * (2 ** (attempt - 1)))  # 10s, 20s, 40s (cap 60s)
+                print(f"[nav] waiting {backoff}s before retry…")
+                time.sleep(backoff)
+
+    # All attempts exhausted → raise so the run fails loudly. The afternoon
+    # scheduled run becomes the next safety net.
+    print(f"[nav] all {max_attempts} attempts failed for {url}")
+    raise last_error
+
+
 def write_json(path, data):
     path.write_text(
         json.dumps(data, indent=2, ensure_ascii=False, default=str),
@@ -232,15 +296,15 @@ def extract_summary_from_orders(orders_data):
     try:
         if not isinstance(orders_data, dict):
             return None
-        
+
         dist = orders_data.get("dist", [])
         if not isinstance(dist, list):
             return None
-        
+
         total_orders = len(dist)
         total_invoice = Decimal("0.00")
         order_refs = []
-        
+
         for order in dist:
             # Sum invoice payments
             invoice_payment = order.get("invoicePayment", "0.00")
@@ -248,7 +312,7 @@ def extract_summary_from_orders(orders_data):
                 total_invoice += Decimal(str(invoice_payment))
             except Exception:
                 pass
-            
+
             # Collect order ref numbers with their individual amounts
             order_ref = order.get("orderRefNumber")
             if order_ref:
@@ -256,7 +320,7 @@ def extract_summary_from_orders(orders_data):
                     "ref": order_ref,
                     "amount": str(Decimal(str(order.get("invoicePayment", "0.00"))))
                 })
-        
+
         return {
             "total_orders": total_orders,
             "total_invoice_payment": str(total_invoice),
@@ -322,7 +386,10 @@ def run_browser_session():
 
         # ── Step A: Login ────────────────────────────────────────────────────
         trace("Navigating to login")
-        page.goto(LOGIN_URL, wait_until="networkidle")
+        goto_with_retries(page, LOGIN_URL)
+        # With domcontentloaded the Angular form may render a beat later;
+        # wait for it explicitly (fill() also auto-waits, this just fails clearer).
+        page.wait_for_selector('input[type="email"]', timeout=30_000)
         screenshot(page, "01_login")
         page.fill('input[type="email"]',    USERNAME)
         page.fill('input[type="password"]', PASSWORD)
@@ -377,7 +444,7 @@ def run_browser_session():
             url     = request.url
             method  = request.method
             headers = dict(request.headers)
-            
+
             trace(f"INTERCEPTED: {method} {url}")
             intercepted_urls.append(url)
 
@@ -435,14 +502,14 @@ def run_browser_session():
         trace("Route interceptor active — navigating to loadsheet page")
 
         # ── Step E: Navigate to loadsheet page ───────────────────────────────
-        page.goto(LOADSHEET_URL, wait_until="networkidle")
-        
+        goto_with_retries(page, LOADSHEET_URL)
+
         trace(f"Current URL after goto: {page.url}")
-        
+
         if "/load-sheet-logs" not in page.url:
             trace("Not on loadsheet page yet, waiting and retrying")
             time.sleep(3)
-            page.goto(LOADSHEET_URL, wait_until="networkidle")
+            goto_with_retries(page, LOADSHEET_URL)
             trace(f"Retried navigation, current URL: {page.url}")
 
         trace("Waiting for load sheet table to fully appear")
@@ -694,13 +761,13 @@ def main():
             row_status    = row_status,
         )
         row["api_result"] = result
-        
+
         summary = extract_summary_from_orders(result.get("data"))
         row["summary"] = summary
-        
+
         if summary:
             trace(f"Loadsheet {row['loadsheet_number']} Summary", summary)
-        
+
         final["loadsheets"].append(prepare_loadsheet_output(row))
 
     write_json(OUTPUT_FILE, final)
