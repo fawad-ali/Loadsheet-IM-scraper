@@ -266,6 +266,42 @@ def dump_html(page, name):
     except Exception:
         log.exception("html dump failed")
 
+def diag(msg, data=None):
+    """
+    Always-on lightweight diagnostics — prints to the GitHub Actions log
+    regardless of DEBUG_ON. Use sparingly for the handful of facts we need
+    to understand WHY a run produced empty data (row counts, parsed dates,
+    match results). Keep payloads small.
+    """
+    if data is not None:
+        try:
+            print(f"[diag] {msg}: {json.dumps(data, ensure_ascii=False, default=str)}")
+        except Exception:
+            print(f"[diag] {msg}: {data}")
+    else:
+        print(f"[diag] {msg}")
+
+
+def wait_for_loadsheet_rows(page, timeout_ms=60_000):
+    """
+    Wait for the Angular loadsheet table to actually render data rows.
+
+    Returns True if rows appeared, False on timeout. This is far more reliable
+    than checking page.url, because with 'domcontentloaded' the URL/router may
+    still be settling — but the presence of tr.data-item rows proves the table
+    really loaded AND that we're on the right page.
+    """
+    try:
+        page.wait_for_selector("table tbody", timeout=timeout_ms)
+        page.wait_for_function(
+            "() => document.querySelectorAll('table tbody tr.data-item').length > 0",
+            timeout=timeout_ms,
+        )
+        return True
+    except PWTimeout:
+        return False
+
+
 def matches_target_date(text):
     if not text:
         return False
@@ -503,41 +539,53 @@ def run_browser_session():
 
         # ── Step E: Navigate to loadsheet page ───────────────────────────────
         goto_with_retries(page, LOADSHEET_URL)
+        diag("after first loadsheet nav", {"url": page.url})
 
-        trace(f"Current URL after goto: {page.url}")
+        # Wait for the table to actually render data (not just the URL to change).
+        rows_ready = wait_for_loadsheet_rows(page)
 
-        if "/load-sheet-logs" not in page.url:
-            trace("Not on loadsheet page yet, waiting and retrying")
+        # If Angular didn't render rows on the first load (router still settling,
+        # transient redirect, or a slow API response), reload ONCE and wait again.
+        if not rows_ready:
+            diag("rows not ready after first nav — reloading once")
             time.sleep(3)
             goto_with_retries(page, LOADSHEET_URL)
-            trace(f"Retried navigation, current URL: {page.url}")
+            rows_ready = wait_for_loadsheet_rows(page)
 
-        trace("Waiting for load sheet table to fully appear")
+        diag("loadsheet rows ready", {"ready": rows_ready, "url": page.url})
 
-        try:
-            page.wait_for_selector("table tbody", timeout=60_000)
-            page.wait_for_function("""
-                () => {
-                    const rows = document.querySelectorAll('table tbody tr.data-item');
-                    return rows.length > 0;
-                }
-            """, timeout=60_000)
-            trace("Loadsheet table rows appeared")
-
-        except PWTimeout:
-            trace("Timed out waiting for loadsheet table")
-
+        # Give Angular a moment to finish painting all rows after they first appear.
         time.sleep(8)
         dump_html(page, "03_loadsheet_page")
         screenshot(page, "03_loadsheet_page")
 
         # ── Step F: Find and process rows ────────────────────────────────────
+        all_tbody_tr = page.query_selector_all("table tbody tr")
         rows = page.query_selector_all("table tbody tr.data-item")
-        trace(f"Found {len(rows)} tr.data-item rows")
+        diag("row discovery", {
+            "tbody_tr_total": len(all_tbody_tr),
+            "tr_data_item":   len(rows),
+        })
 
         if not rows:
             rows = page.query_selector_all("tr.data-item")
-            trace(f"Broad selector found {len(rows)} rows")
+            diag("broad tr.data-item", {"count": len(rows)})
+
+        # Last-resort fallback: if the .data-item class changed, fall back to any
+        # tbody row that has a typical cell count, so we can still see the data.
+        if not rows and all_tbody_tr:
+            rows = [r for r in all_tbody_tr if len(r.query_selector_all("td")) >= 6]
+            diag("fallback tbody rows (>=6 cells)", {"count": len(rows)})
+
+        # If we STILL have nothing, dump a snippet so we can tell whether the page
+        # is a login screen, a spinner, an error, or genuinely an empty table.
+        if not rows:
+            try:
+                body_snippet = (page.inner_text("body") or "").strip()[:600]
+            except Exception:
+                body_snippet = "(could not read body)"
+            diag("NO ROWS FOUND — current url", page.url)
+            diag("NO ROWS FOUND — body text snippet", body_snippet)
 
         matched_rows = []
 
@@ -549,11 +597,6 @@ def run_browser_session():
                 (DEBUG_DIR / f"row_{idx}.html").write_text(raw_html, encoding="utf-8")
 
             cells = row.query_selector_all("td")
-            trace(f"Row {idx}: {len(cells)} cells")
-
-            if len(cells) < 6:
-                trace(f"Row {idx}: skipped (only {len(cells)} cells)")
-                continue
 
             def cell_text(n):
                 try:
@@ -561,18 +604,28 @@ def run_browser_session():
                 except Exception:
                     return ""
 
+            # Dump the full cell layout for the first few rows so we can verify
+            # which column holds the date / status if the table structure changed.
+            if idx < 5:
+                diag(f"row {idx} cells({len(cells)})", [cell_text(i) for i in range(len(cells))])
+
+            if len(cells) < 6:
+                diag(f"row {idx} skipped (only {len(cells)} cells)")
+                continue
+
             date_text = cell_text(5)
             status    = cell_text(6).upper()
+            is_match  = matches_target_date(date_text)
 
-            trace(f"Row {idx}", {
+            diag(f"row {idx} parsed", {
                 "loadsheet": cell_text(0),
                 "orders":    cell_text(1),
                 "date":      date_text,
                 "status":    status,
+                "match":     is_match,
             })
 
-            if not matches_target_date(date_text):
-                trace(f"Row {idx}: date mismatch, skipping")
+            if not is_match:
                 continue
 
             dom_sheet_id = None
@@ -651,6 +704,10 @@ def run_browser_session():
             matched_rows.append(row_data)
 
         trace("All intercepted API URLs", intercepted_urls)
+        diag("matched rows for target date", {
+            "target":  TARGET_LABEL,
+            "matched": len(matched_rows),
+        })
         if DEBUG_ON:
             write_json(DEBUG_DIR / "all_intercepted_urls.json", intercepted_urls)
 
