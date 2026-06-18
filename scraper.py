@@ -282,24 +282,75 @@ def diag(msg, data=None):
         print(f"[diag] {msg}")
 
 
-def wait_for_loadsheet_rows(page, timeout_ms=60_000):
-    """
-    Wait for the Angular loadsheet table to actually render data rows.
+# JS that returns true ONLY when the genuine loadsheet table is rendered.
+# The loadsheet table's order refs start with "LDS-"; the /main/home orders
+# table uses "IM-..." refs, so this reliably distinguishes the two pages even
+# though both use <tr class="data-item"> tables.
+LOADSHEET_TABLE_JS = """
+() => {
+    const rows = document.querySelectorAll('table tbody tr.data-item');
+    for (const r of rows) {
+        const c = r.querySelector('td');
+        if (c && c.innerText.trim().startsWith('LDS-')) return true;
+    }
+    return false;
+}
+"""
 
-    Returns True if rows appeared, False on timeout. This is far more reliable
-    than checking page.url, because with 'domcontentloaded' the URL/router may
-    still be settling — but the presence of tr.data-item rows proves the table
-    really loaded AND that we're on the right page.
-    """
+
+def loadsheet_table_ready(page, timeout_ms=20_000):
+    """True if the real loadsheet table (LDS- rows) has rendered."""
     try:
-        page.wait_for_selector("table tbody", timeout=timeout_ms)
-        page.wait_for_function(
-            "() => document.querySelectorAll('table tbody tr.data-item').length > 0",
-            timeout=timeout_ms,
-        )
+        page.wait_for_function(LOADSHEET_TABLE_JS, timeout=timeout_ms)
         return True
     except PWTimeout:
         return False
+
+
+def ensure_loadsheet_page(page, attempts=5):
+    """
+    Make sure we are actually on the loadsheet table.
+
+    Hard-navigating to /main/load-sheet-logs makes the PostEx SPA redirect to
+    /main/home (which has a *different* data-item table — the orders list). So
+    we can't trust the URL or the mere presence of a table. We loop:
+
+      1. If the LDS- loadsheet table is showing → done.
+      2. Else try an in-app (client-side) nav via the sidebar link, which keeps
+         Angular's session warm and routes correctly.
+      3. Else fall back to another hard navigation.
+
+    Returns True once the loadsheet table is confirmed, False if all attempts
+    fail.
+    """
+    for i in range(1, attempts + 1):
+        diag(f"ensure loadsheet page — attempt {i}", {"url": page.url})
+
+        if loadsheet_table_ready(page, timeout_ms=20_000):
+            diag("loadsheet table confirmed", {"url": page.url})
+            return True
+
+        # Not on the loadsheet table (likely bounced to /main/home).
+        # Prefer an in-app link click (client-side routing avoids the redirect).
+        link = page.query_selector(
+            'a[href*="load-sheet-logs"], a[routerlink*="load-sheet-logs"], '
+            '[routerLink*="load-sheet-logs"]'
+        )
+        if link:
+            diag("clicking in-app loadsheet link")
+            try:
+                link.click()
+                page.wait_for_timeout(3000)
+                continue
+            except Exception as e:
+                diag("in-app link click failed — will hard nav", str(e))
+
+        diag("hard-navigating to loadsheet url again")
+        goto_with_retries(page, LOADSHEET_URL)
+        page.wait_for_timeout(3000)
+
+    diag("ensure loadsheet page FAILED after all attempts", {"url": page.url})
+    return False
 
 
 def matches_target_date(text):
@@ -541,51 +592,44 @@ def run_browser_session():
         goto_with_retries(page, LOADSHEET_URL)
         diag("after first loadsheet nav", {"url": page.url})
 
-        # Wait for the table to actually render data (not just the URL to change).
-        rows_ready = wait_for_loadsheet_rows(page)
-
-        # If Angular didn't render rows on the first load (router still settling,
-        # transient redirect, or a slow API response), reload ONCE and wait again.
-        if not rows_ready:
-            diag("rows not ready after first nav — reloading once")
-            time.sleep(3)
-            goto_with_retries(page, LOADSHEET_URL)
-            rows_ready = wait_for_loadsheet_rows(page)
+        # The SPA may bounce us to /main/home; make sure we end up on the real
+        # loadsheet table (rows starting with "LDS-"), retrying via in-app link
+        # or another hard navigation as needed.
+        rows_ready = ensure_loadsheet_page(page)
 
         diag("loadsheet rows ready", {"ready": rows_ready, "url": page.url})
 
-        # Give Angular a moment to finish painting all rows after they first appear.
+        # Give Angular a moment to finish painting all rows after they appear.
         time.sleep(8)
         dump_html(page, "03_loadsheet_page")
         screenshot(page, "03_loadsheet_page")
 
         # ── Step F: Find and process rows ────────────────────────────────────
-        all_tbody_tr = page.query_selector_all("table tbody tr")
-        rows = page.query_selector_all("table tbody tr.data-item")
+        all_data_item = page.query_selector_all("table tbody tr.data-item")
+
+        # Keep ONLY genuine loadsheet rows — first cell starts with "LDS-".
+        # This guarantees we never accidentally read the /main/home orders table.
+        rows = []
+        for r in all_data_item:
+            first = r.query_selector("td")
+            first_txt = first.inner_text().strip() if first else ""
+            if first_txt.startswith("LDS-"):
+                rows.append(r)
+
         diag("row discovery", {
-            "tbody_tr_total": len(all_tbody_tr),
-            "tr_data_item":   len(rows),
+            "tr_data_item_total": len(all_data_item),
+            "loadsheet_rows":     len(rows),
         })
 
-        if not rows:
-            rows = page.query_selector_all("tr.data-item")
-            diag("broad tr.data-item", {"count": len(rows)})
-
-        # Last-resort fallback: if the .data-item class changed, fall back to any
-        # tbody row that has a typical cell count, so we can still see the data.
-        if not rows and all_tbody_tr:
-            rows = [r for r in all_tbody_tr if len(r.query_selector_all("td")) >= 6]
-            diag("fallback tbody rows (>=6 cells)", {"count": len(rows)})
-
-        # If we STILL have nothing, dump a snippet so we can tell whether the page
-        # is a login screen, a spinner, an error, or genuinely an empty table.
-        if not rows:
+        # If we found data-item rows but none are loadsheet rows, we're on the
+        # wrong table — dump a snippet so the log shows what happened.
+        if all_data_item and not rows:
             try:
                 body_snippet = (page.inner_text("body") or "").strip()[:600]
             except Exception:
                 body_snippet = "(could not read body)"
-            diag("NO ROWS FOUND — current url", page.url)
-            diag("NO ROWS FOUND — body text snippet", body_snippet)
+            diag("NO LOADSHEET ROWS — current url", page.url)
+            diag("NO LOADSHEET ROWS — body text snippet", body_snippet)
 
         matched_rows = []
 
