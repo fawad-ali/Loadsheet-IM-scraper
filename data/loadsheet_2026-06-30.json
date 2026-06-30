@@ -1,0 +1,107 @@
+{
+  "scrape_date": "2026-06-30",
+  "target_date": "Jun 30, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-WQZPR855993",
+      "summary": {
+        "total_orders": 23,
+        "total_invoice_payment": "51073.52",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-42965",
+            "amount": "2152.48"
+          },
+          {
+            "ref": "IM-42974",
+            "amount": "3868.87"
+          },
+          {
+            "ref": "IM-42985",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-42995",
+            "amount": "2349.16"
+          },
+          {
+            "ref": "IM-43002",
+            "amount": "1202.08"
+          },
+          {
+            "ref": "IM-43004",
+            "amount": "4462.69"
+          },
+          {
+            "ref": "IM-43005",
+            "amount": "2358.40"
+          },
+          {
+            "ref": "IM-43006",
+            "amount": "1263.46"
+          },
+          {
+            "ref": "IM-43007",
+            "amount": "4576.00"
+          },
+          {
+            "ref": "IM-43008",
+            "amount": "3217.04"
+          },
+          {
+            "ref": "IM-43009",
+            "amount": "2898.49"
+          },
+          {
+            "ref": "IM-43011",
+            "amount": "3777.49"
+          },
+          {
+            "ref": "IM-43012",
+            "amount": "1187.23"
+          },
+          {
+            "ref": "IM-43014",
+            "amount": "2606.89"
+          },
+          {
+            "ref": "IM-43016",
+            "amount": "761.53"
+          },
+          {
+            "ref": "IM-43018",
+            "amount": "2290.09"
+          },
+          {
+            "ref": "IM-43019",
+            "amount": "4720.93"
+          },
+          {
+            "ref": "IM-43020",
+            "amount": "2701.66"
+          },
+          {
+            "ref": "IM-43023",
+            "amount": "437.80"
+          },
+          {
+            "ref": "IM-43024",
+            "amount": "1697.08"
+          },
+          {
+            "ref": "IM-43026",
+            "amount": "1624.00"
+          },
+          {
+            "ref": "IM-43080",
+            "amount": "455.62"
+          },
+          {
+            "ref": "IM-43082",
+            "amount": "464.53"
+          }
+        ]
+      }
+    }
+  ]
+}
