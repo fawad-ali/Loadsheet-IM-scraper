@@ -1,0 +1,127 @@
+{
+  "scrape_date": "2026-07-09",
+  "target_date": "Jul 9, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-X6BGK428621",
+      "summary": {
+        "total_orders": 28,
+        "total_invoice_payment": "52799.64",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-43161",
+            "amount": "2380.18"
+          },
+          {
+            "ref": "IM-43229",
+            "amount": "7148.67"
+          },
+          {
+            "ref": "IM-43231",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-43232",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-43235",
+            "amount": "3674.74"
+          },
+          {
+            "ref": "IM-43248",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-43265",
+            "amount": "864.49"
+          },
+          {
+            "ref": "IM-43267",
+            "amount": "2151.31"
+          },
+          {
+            "ref": "IM-43268",
+            "amount": "2302.41"
+          },
+          {
+            "ref": "IM-43279",
+            "amount": "3852.31"
+          },
+          {
+            "ref": "IM-43296",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-43303",
+            "amount": "3242.47"
+          },
+          {
+            "ref": "IM-43317",
+            "amount": "1449.58"
+          },
+          {
+            "ref": "IM-43318",
+            "amount": "1657.48"
+          },
+          {
+            "ref": "IM-43321",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-43322",
+            "amount": "1240.69"
+          },
+          {
+            "ref": "IM-43323",
+            "amount": "2187.13"
+          },
+          {
+            "ref": "IM-43325",
+            "amount": "2975.17"
+          },
+          {
+            "ref": "IM-43326",
+            "amount": "1292.65"
+          },
+          {
+            "ref": "IM-43327",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-43328",
+            "amount": "1884.82"
+          },
+          {
+            "ref": "IM-43329",
+            "amount": "1280.29"
+          },
+          {
+            "ref": "IM-43331",
+            "amount": "1527.52"
+          },
+          {
+            "ref": "IM-43336",
+            "amount": "987.25"
+          },
+          {
+            "ref": "IM-43337",
+            "amount": "3532.00"
+          },
+          {
+            "ref": "IM-43338",
+            "amount": "1186.46"
+          },
+          {
+            "ref": "IM-43339",
+            "amount": "1021.90"
+          },
+          {
+            "ref": "IM-43340",
+            "amount": "4960.12"
+          }
+        ]
+      }
+    }
+  ]
+}
