@@ -1,0 +1,87 @@
+{
+  "scrape_date": "2026-07-13",
+  "target_date": "Jul 13, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-GBLRZ949781",
+      "summary": {
+        "total_orders": 18,
+        "total_invoice_payment": "36126.44",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-43270",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-43376",
+            "amount": "2546.86"
+          },
+          {
+            "ref": "IM-43378",
+            "amount": "3613.79"
+          },
+          {
+            "ref": "IM-43379",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-43385",
+            "amount": "1273.54"
+          },
+          {
+            "ref": "IM-43412",
+            "amount": "9390.93"
+          },
+          {
+            "ref": "IM-43413",
+            "amount": "1361.47"
+          },
+          {
+            "ref": "IM-43414",
+            "amount": "955.02"
+          },
+          {
+            "ref": "IM-43416",
+            "amount": "3063.28"
+          },
+          {
+            "ref": "IM-43417",
+            "amount": "1185.25"
+          },
+          {
+            "ref": "IM-43418",
+            "amount": "2513.83"
+          },
+          {
+            "ref": "IM-43419",
+            "amount": "2285.53"
+          },
+          {
+            "ref": "IM-43421",
+            "amount": "1183.27"
+          },
+          {
+            "ref": "IM-43422",
+            "amount": "4829.44"
+          },
+          {
+            "ref": "IM-43428",
+            "amount": "1051.60"
+          },
+          {
+            "ref": "IM-43475",
+            "amount": "458.59"
+          },
+          {
+            "ref": "IM-43499",
+            "amount": "414.04"
+          },
+          {
+            "ref": "IM-43546",
+            "amount": "0.00"
+          }
+        ]
+      }
+    }
+  ]
+}
