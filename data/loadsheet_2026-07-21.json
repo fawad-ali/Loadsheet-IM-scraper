@@ -1,0 +1,27 @@
+{
+  "scrape_date": "2026-07-21",
+  "target_date": "Jul 21, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-82FBAEB0DBB62247",
+      "summary": {
+        "total_orders": 1,
+        "total_invoice_payment": "706.86",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-43778",
+            "amount": "706.86"
+          }
+        ]
+      }
+    },
+    {
+      "loadsheet_number": "LDS-IAWZA157708",
+      "summary": {
+        "total_orders": 0,
+        "total_invoice_payment": "0.00",
+        "order_ref_numbers": []
+      }
+    }
+  ]
+}
