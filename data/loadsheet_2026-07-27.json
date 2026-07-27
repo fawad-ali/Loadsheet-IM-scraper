@@ -1,0 +1,27 @@
+{
+  "scrape_date": "2026-07-27",
+  "target_date": "Jul 27, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-0E0576E75DC62247",
+      "summary": {
+        "total_orders": 1,
+        "total_invoice_payment": "2158.60",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-44041",
+            "amount": "2158.60"
+          }
+        ]
+      }
+    },
+    {
+      "loadsheet_number": "LDS-DEIW0105206",
+      "summary": {
+        "total_orders": 0,
+        "total_invoice_payment": "0.00",
+        "order_ref_numbers": []
+      }
+    }
+  ]
+}
