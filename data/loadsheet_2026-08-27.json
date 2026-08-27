@@ -1,0 +1,91 @@
+{
+  "scrape_date": "2026-08-27",
+  "target_date": "Aug 27, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-AQLAK354504",
+      "summary": {
+        "total_orders": 19,
+        "total_invoice_payment": "44356.01",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-45325",
+            "amount": "9250.06"
+          },
+          {
+            "ref": "IM-45436",
+            "amount": "3184.00"
+          },
+          {
+            "ref": "IM-45496",
+            "amount": "2467.30"
+          },
+          {
+            "ref": "IM-44964",
+            "amount": "2270.00"
+          },
+          {
+            "ref": "IM-45397",
+            "amount": "3230.86"
+          },
+          {
+            "ref": "IM-45408",
+            "amount": "2140.00"
+          },
+          {
+            "ref": "IM-45432",
+            "amount": "1792.93"
+          },
+          {
+            "ref": "IM-45465",
+            "amount": "3470.17"
+          },
+          {
+            "ref": "IM-45468",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-45470",
+            "amount": "3910.00"
+          },
+          {
+            "ref": "IM-45487",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-45507",
+            "amount": "366.52"
+          },
+          {
+            "ref": "IM-45508",
+            "amount": "1637.62"
+          },
+          {
+            "ref": "IM-45509",
+            "amount": "3328.42"
+          },
+          {
+            "ref": "IM-45518",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-45520",
+            "amount": "1268.41"
+          },
+          {
+            "ref": "IM-45521",
+            "amount": "1624.00"
+          },
+          {
+            "ref": "IM-45524",
+            "amount": "1818.85"
+          },
+          {
+            "ref": "IM-45525",
+            "amount": "2596.87"
+          }
+        ]
+      }
+    }
+  ]
+}
