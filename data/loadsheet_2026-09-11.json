@@ -1,0 +1,79 @@
+{
+  "scrape_date": "2026-09-11",
+  "target_date": "Sep 11, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-J6LVP895553",
+      "summary": {
+        "total_orders": 16,
+        "total_invoice_payment": "41984.06",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-45678",
+            "amount": "3013.23"
+          },
+          {
+            "ref": "IM-45947",
+            "amount": "8415.00"
+          },
+          {
+            "ref": "IM-46002",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-46079",
+            "amount": "9000.78"
+          },
+          {
+            "ref": "IM-45904",
+            "amount": "3577.98"
+          },
+          {
+            "ref": "IM-45972",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-45985",
+            "amount": "3449.38"
+          },
+          {
+            "ref": "IM-46005",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-46013",
+            "amount": "4948.60"
+          },
+          {
+            "ref": "IM-46071",
+            "amount": "1682.23"
+          },
+          {
+            "ref": "IM-46074",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-46092",
+            "amount": "1074.37"
+          },
+          {
+            "ref": "IM-46093",
+            "amount": "364.00"
+          },
+          {
+            "ref": "IM-46109",
+            "amount": "3788.02"
+          },
+          {
+            "ref": "IM-46110",
+            "amount": "1957.45"
+          },
+          {
+            "ref": "IM-46111",
+            "amount": "713.02"
+          }
+        ]
+      }
+    }
+  ]
+}
