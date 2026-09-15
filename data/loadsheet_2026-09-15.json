@@ -1,0 +1,71 @@
+{
+  "scrape_date": "2026-09-15",
+  "target_date": "Sep 15, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-1Y7KW207066",
+      "summary": {
+        "total_orders": 14,
+        "total_invoice_payment": "21861.50",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-46100",
+            "amount": "3500.00"
+          },
+          {
+            "ref": "IM-46175",
+            "amount": "1237.00"
+          },
+          {
+            "ref": "IM-46293",
+            "amount": "3979.24"
+          },
+          {
+            "ref": "IM-45816",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-46052",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-46129",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-46131",
+            "amount": "1376.32"
+          },
+          {
+            "ref": "IM-46138",
+            "amount": "3395.92"
+          },
+          {
+            "ref": "IM-46169",
+            "amount": "1092.19"
+          },
+          {
+            "ref": "IM-46213",
+            "amount": "3100.00"
+          },
+          {
+            "ref": "IM-46232",
+            "amount": "754.60"
+          },
+          {
+            "ref": "IM-46250",
+            "amount": "2398.00"
+          },
+          {
+            "ref": "IM-46285",
+            "amount": "1028.23"
+          },
+          {
+            "ref": "IM-46318",
+            "amount": "0.00"
+          }
+        ]
+      }
+    }
+  ]
+}
