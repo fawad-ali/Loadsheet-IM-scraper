@@ -1,0 +1,27 @@
+{
+  "scrape_date": "2026-09-17",
+  "target_date": "Sep 17, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-Z2QB9155655",
+      "summary": {
+        "total_orders": 1,
+        "total_invoice_payment": "6000.00",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-46086",
+            "amount": "6000.00"
+          }
+        ]
+      }
+    },
+    {
+      "loadsheet_number": "LDS-Z4QRA220286",
+      "summary": {
+        "total_orders": 0,
+        "total_invoice_payment": "0.00",
+        "order_ref_numbers": []
+      }
+    }
+  ]
+}
