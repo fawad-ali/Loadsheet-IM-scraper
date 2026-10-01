@@ -1,0 +1,31 @@
+{
+  "scrape_date": "2026-09-30",
+  "target_date": "Sep 30, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-PZHSD462672",
+      "summary": {
+        "total_orders": 2,
+        "total_invoice_payment": "3519.93",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-46897",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-46922",
+            "amount": "3519.93"
+          }
+        ]
+      }
+    },
+    {
+      "loadsheet_number": "LDS-HTXUH563371",
+      "summary": {
+        "total_orders": 0,
+        "total_invoice_payment": "0.00",
+        "order_ref_numbers": []
+      }
+    }
+  ]
+}
