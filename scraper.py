@@ -75,7 +75,37 @@ v5.1 RESILIENCE UPDATE (navigation hardening)
        run in the afternoon is the outer safety net.)
 
 ─────────────────────────────────────────────────────────────────────
-v5.2 MULTI-LOADSHEET FIX
+v5.3 MODAL-DISMISSAL FIX (true root cause of multi-loadsheet failure)
+─────────────────────────────────────────────────────────────────────
+  v5.2 restructured row processing into two passes so each click started
+  from a freshly-queried DOM. That was necessary but not sufficient. The
+  v5.3 run log revealed what was actually blocking the second click:
+
+    <td ... >IM-46922</td> from
+      <div ... id="exampleModalLong1" class="modal ... show" ...>
+      subtree intercepts pointer events
+
+  Clicking the order-count span on Row 0 opens a Bootstrap modal (the
+  "View Orders" dialog) that lists that loadsheet's orders. PostEx has
+  that modal configured so Escape does NOT dismiss it — so our v5.2
+  page.keyboard.press("Escape") was a no-op. The modal stayed on top of
+  the table, and when we tried to click Row 1 Playwright correctly
+  refused (the modal's subtree intercepts pointer events), retrying for
+  30s per selector × 5 selectors × fallback — hanging the whole run.
+
+  Fix: a new dismiss_any_modal() helper runs page.evaluate() to:
+    1. Call Bootstrap/jQuery's .modal('hide') if available
+    2. Brute-force remove the `show` class and set display:none on every
+       `.modal`, delete every `.modal-backdrop`, and clear `.modal-open`
+       off <body> (which Bootstrap uses to lock scrolling).
+  We call it both BEFORE every row's click (clearing any modal left by
+  the previous row) and AFTER (as cleanup).
+  We also lower the per-click timeout from Playwright's 30s default to
+  5s, so if a click is ever blocked again the run fails that attempt
+  fast and moves on instead of hanging for minutes.
+
+─────────────────────────────────────────────────────────────────────
+v5.2 MULTI-LOADSHEET RESTRUCTURE (prerequisite for v5.3)
 ─────────────────────────────────────────────────────────────────────
   Symptom: when there were TWO loadsheets for the target date, only the
   most recent one came back with order data; the older one was missing
@@ -337,6 +367,58 @@ def loadsheet_table_ready(page, timeout_ms=20_000):
         return True
     except PWTimeout:
         return False
+
+
+def dismiss_any_modal(page):
+    """
+    Forcibly dismiss ANY open Bootstrap modal and remove its backdrop.
+
+    Why this exists (v5.3): clicking a loadsheet row's order-count span opens
+    a Bootstrap modal (#exampleModalLong1) showing that loadsheet's orders.
+    PostEx configures that modal to ignore Escape and backdrop clicks, so the
+    polite "page.keyboard.press('Escape')" we tried in v5.2 does nothing — the
+    modal stays open, sits on top of the table, and swallows every subsequent
+    click. Playwright correctly refuses to click the next row's span because
+    the modal subtree "intercepts pointer events" — the second loadsheet
+    then times out through every selector and no API call ever fires for it.
+
+    The only reliable way out is to tear the modal (and its backdrop and the
+    body.modal-open class Bootstrap adds) out of the DOM ourselves. We do
+    that with a tiny JS snippet that handles both the Bootstrap-managed case
+    (close via jQuery if present) AND the brute-force DOM removal case.
+    """
+    try:
+        page.evaluate("""
+            () => {
+                // 1. Try the polite Bootstrap/jQuery close first (if jQuery
+                //    and the Bootstrap modal plugin are loaded on the page).
+                try {
+                    if (window.jQuery && window.jQuery.fn && window.jQuery.fn.modal) {
+                        window.jQuery('.modal.show').modal('hide');
+                        window.jQuery('.modal').modal('hide');
+                    }
+                } catch (e) { /* ignore and fall through to brute force */ }
+
+                // 2. Brute-force: hide every modal, remove every backdrop,
+                //    and strip the modal-open class/body-level styles
+                //    Bootstrap uses to lock the page. This guarantees the
+                //    table underneath is clickable again, regardless of
+                //    whether Bootstrap's own JS cooperated.
+                document.querySelectorAll('.modal').forEach(m => {
+                    m.classList.remove('show');
+                    m.style.display = 'none';
+                    m.setAttribute('aria-hidden', 'true');
+                });
+                document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
+                document.body.classList.remove('modal-open');
+                document.body.style.removeProperty('overflow');
+                document.body.style.removeProperty('padding-right');
+            }
+        """)
+        # Tiny settle so the browser actually repaints the layer stack
+        page.wait_for_timeout(300)
+    except Exception as e:
+        diag(f"dismiss_any_modal failed (continuing anyway): {e}")
 
 
 def ensure_loadsheet_page(page, attempts=5):
@@ -773,9 +855,19 @@ def run_browser_session():
             idx = row_data["row_index"]
             target_number = row_data["loadsheet_number"]
 
+            # v5.3: FORCIBLY dismiss any Bootstrap modal left open by the
+            # previous row's click. The polite Escape press in v5.2 did not
+            # work because PostEx configures the modal to ignore Escape, so
+            # it stayed on top of the table and blocked every subsequent
+            # click (that's what the "intercepts pointer events" errors in
+            # the log were about). This has to run BEFORE we even look at
+            # the table again — once the modal is gone, the loadsheet
+            # table underneath becomes clickable again.
+            dismiss_any_modal(page)
+
             # Make sure we're on a clean loadsheet list before every click —
-            # this undoes whatever overlay/navigation the PREVIOUS row's
-            # click may have left behind.
+            # this undoes whatever navigation the PREVIOUS row's click may
+            # have left behind (in addition to the modal we just closed).
             ensure_loadsheet_page(page)
             page.wait_for_timeout(1000)
 
@@ -804,6 +896,13 @@ def run_browser_session():
             # loadsheet got data" symptom couldn't be diagnosed from the log.
             click_urls_before = len(intercepted_urls)
 
+            # v5.3: give each click attempt a SHORT per-attempt timeout
+            # (5s instead of Playwright's 30s default). Without this, a
+            # single blocked click can hang for 30s × 5 selectors × 2
+            # retries = several minutes per row before we fall through,
+            # which is what froze the previous run.
+            CLICK_TIMEOUT_MS = 5_000
+
             clicked = False
             used_sel = None
             for sel in [
@@ -817,22 +916,26 @@ def run_browser_session():
                     el = row.query_selector(sel)
                     if el:
                         txt = el.inner_text().strip()
-                        el.click()
+                        el.click(timeout=CLICK_TIMEOUT_MS)
                         clicked = True
                         used_sel = sel
                         diag(f"Row {idx} ({target_number}): clicked via selector '{sel}', text='{txt}'")
                         break
                 except Exception as e:
-                    diag(f"Row {idx} ({target_number}): selector '{sel}' failed: {e}")
+                    # Keep the error short — the full Playwright call log
+                    # is pages long and unhelpful once we know it's a modal.
+                    diag(f"Row {idx} ({target_number}): selector '{sel}' failed: "
+                         f"{str(e).splitlines()[0]}")
 
             if not clicked:
                 try:
-                    cells[1].click()
+                    cells[1].click(timeout=CLICK_TIMEOUT_MS)
                     clicked = True
                     used_sel = "cells[1] fallback"
                     diag(f"Row {idx} ({target_number}): clicked cell[1] directly (fallback)")
                 except Exception as e:
-                    diag(f"Row {idx} ({target_number}): cell[1] click failed: {e}")
+                    diag(f"Row {idx} ({target_number}): cell[1] click failed: "
+                         f"{str(e).splitlines()[0]}")
 
             if clicked:
                 time.sleep(8)
@@ -861,13 +964,10 @@ def run_browser_session():
                 diag(f"Row {idx} ({target_number}): could not click any span — "
                      f"will fall back to dom_sheet_id={row_data['dom_sheet_id']!r}")
 
-            # Dismiss whatever popup/overlay the click may have opened so it
-            # can't interfere with re-locating the NEXT matched row.
-            try:
-                page.keyboard.press("Escape")
-            except Exception:
-                pass
-            page.wait_for_timeout(1000)
+            # v5.3: forcibly tear down whatever Bootstrap modal the click
+            # opened so it can't block the NEXT row's click. Escape alone
+            # didn't work (see dismiss_any_modal's docstring).
+            dismiss_any_modal(page)
 
             matched_rows.append(row_data)
 
@@ -898,10 +998,42 @@ STATUS_OPTIONS = {
 }
 
 
+def _dist_count(data):
+    """How many orders are in a /load-sheet/{id}/order response payload."""
+    if not isinstance(data, dict):
+        return 0
+    dist = data.get("dist")
+    if not isinstance(dist, list):
+        return 0
+    return len(dist)
+
+
 def fetch_orders(session, sheet_id, order_api_url=None, row_status="COMPLETED"):
     """
-    If we captured the exact URL from the interceptor, use it directly.
-    Otherwise build it from the sheet_id with status option candidates.
+    Fetch the orders for a loadsheet, trying every orderStatusOption and
+    keeping whichever response actually returned orders. Returns the
+    richest result (the one with the most orders).
+
+    ─── v5.4 WHY THIS WAS REWRITTEN ────────────────────────────────────────
+    The previous version returned on the FIRST HTTP 200, even if the
+    response body had an empty `dist` array (zero orders). That broke
+    multi-loadsheet runs: Angular's initial modal call always uses
+    orderStatusOption=booked, which happens to return 2 real orders for
+    LDS-PZHSD462672 but returns an empty list for LDS-HTXUH563371 (whose
+    40 orders are all "delivered", not "booked" — the normal state once a
+    loadsheet is COMPLETED). The old code took that empty 200 as success
+    and never tried the other status options, so the second loadsheet
+    silently came back with total_orders=0 even though the UI showed 40.
+
+    New behaviour:
+      * Query every status option in turn ("booked", "delivered", "return",
+        "cancelled", and the unfiltered "" option which asks the API for
+        every order on the loadsheet regardless of status).
+      * Keep whichever response returned the most orders.
+      * Only return a zero-order result if literally every attempt returned
+        zero (i.e. the loadsheet really is empty).
+      * Early-exit if the unfiltered call succeeds non-empty — nothing
+        further is going to help.
     """
     base_url = f"https://{API_HOST}/services/merchant/api/load-sheet/{sheet_id}/order"
 
@@ -909,11 +1041,17 @@ def fetch_orders(session, sheet_id, order_api_url=None, row_status="COMPLETED"):
     if order_api_url:
         urls_to_try.append(("(captured)", order_api_url, {}))
 
-    for opt in STATUS_OPTIONS.get(row_status, ["booked", "delivered", "return", ""]):
+    # Always try EVERY status option (not just those matching row_status) —
+    # PostEx is inconsistent about which bucket a COMPLETED loadsheet's
+    # orders end up in. "" means "no filter at all": the catch-all that
+    # should always return every order on the loadsheet.
+    for opt in ["booked", "delivered", "return", "cancelled", ""]:
         params = {"loadSheetId": sheet_id, "direction": "desc"}
         if opt:
             params["orderStatusOption"] = opt
-        urls_to_try.append((opt, base_url, params))
+        urls_to_try.append((opt or "(no filter)", base_url, params))
+
+    best = None   # {"status_option","status_code","url","data","count"}
 
     for label, url, params in urls_to_try:
         trace(f"Fetching orders [{label}]", {"url": url, "params": params})
@@ -927,7 +1065,6 @@ def fetch_orders(session, sheet_id, order_api_url=None, row_status="COMPLETED"):
                  ).write_text(raw, encoding="utf-8")
 
             trace(f"Response {r.status_code}", {"preview": raw[:600]})
-            diag(f"sheet {sheet_id}: attempt [{label}] -> HTTP {r.status_code}")
 
             try:
                 data = r.json()
@@ -935,15 +1072,50 @@ def fetch_orders(session, sheet_id, order_api_url=None, row_status="COMPLETED"):
                 data = {"raw_text": raw}
 
             if r.status_code == 200:
-                diag(f"sheet {sheet_id}: SUCCESS with [{label}]")
-                return {"status_option": label, "status_code": 200,
-                        "url": r.url, "data": data}
+                count = _dist_count(data)
+                diag(f"sheet {sheet_id}: attempt [{label}] -> HTTP 200, {count} order(s)")
+
+                if best is None or count > best["count"]:
+                    best = {
+                        "status_option": label,
+                        "status_code":   200,
+                        "url":           r.url,
+                        "data":          data,
+                        "count":         count,
+                    }
+
+                # Unfiltered call should return everything — if it did, stop.
+                if label == "(no filter)" and count > 0:
+                    diag(f"sheet {sheet_id}: unfiltered call returned {count} orders, stopping search")
+                    break
+            else:
+                diag(f"sheet {sheet_id}: attempt [{label}] -> HTTP {r.status_code}")
 
         except Exception as e:
             diag(f"sheet {sheet_id}: request failed for [{label}]: {e}")
             log.exception(f"Request failed for [{label}]")
 
-    diag(f"sheet {sheet_id}: ALL status-option attempts failed")
+    if best is not None and best["count"] > 0:
+        diag(f"sheet {sheet_id}: SUCCESS — using [{best['status_option']}] with {best['count']} order(s)")
+        return {
+            "status_option": best["status_option"],
+            "status_code":   best["status_code"],
+            "url":           best["url"],
+            "data":          best["data"],
+        }
+
+    # Nothing had any orders — still return whichever 200 we got (if any)
+    # so the output file records that the API genuinely said zero.
+    if best is not None:
+        diag(f"sheet {sheet_id}: every status option returned 0 orders — recording empty result")
+        return {
+            "status_option": best["status_option"],
+            "status_code":   best["status_code"],
+            "url":           best["url"],
+            "data":          best["data"],
+        }
+
+    diag(f"sheet {sheet_id}: ALL requests failed (no 200 at all)")
     return {"status_option": "all_failed", "status_code": None, "data": {}}
 
 
