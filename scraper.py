@@ -962,21 +962,22 @@ def main():
 
     matched_rows, proxy_session = run_browser_session()
 
-    trace(f"{len(matched_rows)} row(s) matched for {TARGET_LABEL}")
+    diag(f"{len(matched_rows)} row(s) matched for {TARGET_LABEL} — entering per-row order fetch")
 
     for row in matched_rows:
         sheet_id      = row.get("real_sheet_id") or row.get("dom_sheet_id")
         order_api_url = row.get("order_api_url")
         row_status    = row.get("status", "COMPLETED")
 
-        trace("Processing row", {
+        diag(f"loadsheet {row.get('loadsheet_number')}: processing", {
             "sheet_id":      sheet_id,
+            "used_real_id":  bool(row.get("real_sheet_id")),
             "order_api_url": order_api_url,
             "status":        row_status,
         })
 
         if not sheet_id:
-            trace("Skipping — no sheet_id")
+            diag(f"loadsheet {row.get('loadsheet_number')}: SKIPPED — no sheet_id (real_sheet_id and dom_sheet_id both empty)")
             row["api_result"] = {"error": "no sheet_id"}
             row["summary"] = None
             final["loadsheets"].append(prepare_loadsheet_output(row))
@@ -993,13 +994,16 @@ def main():
         summary = extract_summary_from_orders(result.get("data"))
         row["summary"] = summary
 
-        if summary:
-            trace(f"Loadsheet {row['loadsheet_number']} Summary", summary)
+        diag(f"loadsheet {row.get('loadsheet_number')}: result", {
+            "status_option": result.get("status_option"),
+            "http_status":   result.get("status_code"),
+            "summary_total_orders": (summary or {}).get("total_orders"),
+        })
 
         final["loadsheets"].append(prepare_loadsheet_output(row))
 
     write_json(OUTPUT_FILE, final)
-    trace("DONE", {
+    diag("DONE", {
         "rows":   len(matched_rows),
         "saved":  len(final["loadsheets"]),
         "output": str(OUTPUT_FILE),
