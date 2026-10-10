@@ -1,0 +1,168 @@
+{
+  "scrape_date": "2026-10-09",
+  "target_date": "Oct 9, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-2AEDCC478DC62247",
+      "summary": {
+        "total_orders": 1,
+        "total_invoice_payment": "2787.85",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-47446",
+            "amount": "2787.85"
+          }
+        ]
+      }
+    },
+    {
+      "loadsheet_number": "LDS-9PVCJ789587",
+      "summary": {
+        "total_orders": 35,
+        "total_invoice_payment": "57464.91",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-47278",
+            "amount": "3496.00"
+          },
+          {
+            "ref": "IM-44946",
+            "amount": "576.40"
+          },
+          {
+            "ref": "IM-45986",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-47230",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-47440",
+            "amount": "2651.44"
+          },
+          {
+            "ref": "IM-47443",
+            "amount": "1483.12"
+          },
+          {
+            "ref": "IM-47444",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-47447",
+            "amount": "2095.06"
+          },
+          {
+            "ref": "IM-47448",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-47450",
+            "amount": "1482.80"
+          },
+          {
+            "ref": "IM-47451",
+            "amount": "1729.90"
+          },
+          {
+            "ref": "IM-47453",
+            "amount": "2611.65"
+          },
+          {
+            "ref": "IM-47454",
+            "amount": "1818.85"
+          },
+          {
+            "ref": "IM-47455",
+            "amount": "1973.29"
+          },
+          {
+            "ref": "IM-47456",
+            "amount": "3028.00"
+          },
+          {
+            "ref": "IM-47458",
+            "amount": "1073.38"
+          },
+          {
+            "ref": "IM-47459",
+            "amount": "1257.52"
+          },
+          {
+            "ref": "IM-47460",
+            "amount": "1874.29"
+          },
+          {
+            "ref": "IM-47461",
+            "amount": "2469.28"
+          },
+          {
+            "ref": "IM-47463",
+            "amount": "1541.65"
+          },
+          {
+            "ref": "IM-47464",
+            "amount": "2611.84"
+          },
+          {
+            "ref": "IM-47465",
+            "amount": "478.39"
+          },
+          {
+            "ref": "IM-47467",
+            "amount": "1749.28"
+          },
+          {
+            "ref": "IM-47468",
+            "amount": "2829.64"
+          },
+          {
+            "ref": "IM-47469",
+            "amount": "2532.70"
+          },
+          {
+            "ref": "IM-47471",
+            "amount": "1400.08"
+          },
+          {
+            "ref": "IM-47472",
+            "amount": "1731.73"
+          },
+          {
+            "ref": "IM-47474",
+            "amount": "1077.22"
+          },
+          {
+            "ref": "IM-47480",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-47484",
+            "amount": "996.17"
+          },
+          {
+            "ref": "IM-47485",
+            "amount": "580.00"
+          },
+          {
+            "ref": "IM-47487",
+            "amount": "2381.05"
+          },
+          {
+            "ref": "IM-47489",
+            "amount": "3017.62"
+          },
+          {
+            "ref": "IM-47490",
+            "amount": "4916.56"
+          },
+          {
+            "ref": "IM-47604",
+            "amount": "0.00"
+          }
+        ]
+      }
+    }
+  ]
+}
