@@ -1,0 +1,39 @@
+{
+  "scrape_date": "2026-11-07",
+  "target_date": "Nov 7, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-VLSRZ459585",
+      "summary": {
+        "total_orders": 6,
+        "total_invoice_payment": "9938.19",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-48699",
+            "amount": "2419.00"
+          },
+          {
+            "ref": "IM-48659",
+            "amount": "1560.64"
+          },
+          {
+            "ref": "IM-48691",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-48698",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-48716",
+            "amount": "3645.67"
+          },
+          {
+            "ref": "IM-48717",
+            "amount": "2312.88"
+          }
+        ]
+      }
+    }
+  ]
+}
