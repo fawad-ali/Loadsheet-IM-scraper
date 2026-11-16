@@ -1,0 +1,103 @@
+{
+  "scrape_date": "2026-11-16",
+  "target_date": "Nov 16, 2026",
+  "loadsheets": [
+    {
+      "loadsheet_number": "LDS-HQQMI298334",
+      "summary": {
+        "total_orders": 22,
+        "total_invoice_payment": "30249.37",
+        "order_ref_numbers": [
+          {
+            "ref": "IM-48665",
+            "amount": "863.39"
+          },
+          {
+            "ref": "IM-48865",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-48910",
+            "amount": "1632.73"
+          },
+          {
+            "ref": "IM-48916",
+            "amount": "1142.68"
+          },
+          {
+            "ref": "IM-48923",
+            "amount": "1516.90"
+          },
+          {
+            "ref": "IM-48925",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-48929",
+            "amount": "896.17"
+          },
+          {
+            "ref": "IM-48931",
+            "amount": "692.23"
+          },
+          {
+            "ref": "IM-48933",
+            "amount": "2657.83"
+          },
+          {
+            "ref": "IM-48935",
+            "amount": "2560.36"
+          },
+          {
+            "ref": "IM-48936",
+            "amount": "452.65"
+          },
+          {
+            "ref": "IM-48938",
+            "amount": "2351.79"
+          },
+          {
+            "ref": "IM-48940",
+            "amount": "1595.11"
+          },
+          {
+            "ref": "IM-48941",
+            "amount": "1030.81"
+          },
+          {
+            "ref": "IM-48942",
+            "amount": "4725.82"
+          },
+          {
+            "ref": "IM-48943",
+            "amount": "782.32"
+          },
+          {
+            "ref": "IM-48944",
+            "amount": "1581.25"
+          },
+          {
+            "ref": "IM-48945",
+            "amount": "2296.27"
+          },
+          {
+            "ref": "IM-48946",
+            "amount": "982.30"
+          },
+          {
+            "ref": "IM-48948",
+            "amount": "1930.18"
+          },
+          {
+            "ref": "IM-48949",
+            "amount": "0.00"
+          },
+          {
+            "ref": "IM-48950",
+            "amount": "558.58"
+          }
+        ]
+      }
+    }
+  ]
+}
